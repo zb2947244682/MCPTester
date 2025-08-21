@@ -262,7 +262,7 @@ class MCPTester {
                 },
                 test_params: {
                   type: "object",
-                  description: "测试工具时使用的参数",
+                  description: "测试工具时使用的参数。如果指定了tool_name，直接传递该工具的参数；否则传递一个对象，键为工具名，值为对应参数。示例：测试单个工具时 {\"a\": 10, \"b\": 20}，测试多个工具时 {\"add\": {\"a\": 10, \"b\": 20}, \"multiply\": {\"x\": 3, \"y\": 4}}",
                   default: {},
                 },
               },
@@ -333,7 +333,7 @@ class MCPTester {
                 },
                 request_data: {
                   type: "object",
-                  description: "请求数据",
+                  description: "请求数据。对于call_tool类型，使用格式：{\"name\": \"工具名\", \"arguments\": {参数}}。示例：{\"name\": \"add\", \"arguments\": {\"a\": 1, \"b\": 2}}",
                   default: {},
                 },
               },
@@ -617,7 +617,22 @@ ${testResults.errors.map(e => `- ${e}`).join('\n')}` : ''}`;
         // 尝试调用工具进行测试
         if (toolValidation.schemaValid) {
           try {
-            const testArgs = test_params[tool.name] || this.generateExampleCall(tool);
+            // 智能处理test_params：
+            // 1. 如果指定了tool_name且test_params不为空，直接使用test_params作为参数
+            // 2. 否则，从test_params[tool.name]获取参数
+            // 3. 如果都没有，生成示例参数
+            let testArgs;
+            if (tool_name && Object.keys(test_params).length > 0 && !test_params[tool.name]) {
+              // 测试单个工具时，直接使用test_params
+              testArgs = test_params;
+            } else if (test_params[tool.name]) {
+              // 从test_params对象中获取对应工具的参数
+              testArgs = test_params[tool.name];
+            } else {
+              // 生成示例参数
+              testArgs = this.generateExampleCall(tool);
+            }
+            
             const startTime = Date.now();
             const result = await client.callTool(tool.name, testArgs);
             const executionTime = Date.now() - startTime;
@@ -634,10 +649,20 @@ ${testResults.errors.map(e => `- ${e}`).join('\n')}` : ''}`;
               toolValidation.issues.push('响应格式不符合MCP规范');
             }
           } catch (error) {
+            // 同样的逻辑处理失败时的testArgs
+            let testArgs;
+            if (tool_name && Object.keys(test_params).length > 0 && !test_params[tool.name]) {
+              testArgs = test_params;
+            } else if (test_params[tool.name]) {
+              testArgs = test_params[tool.name];
+            } else {
+              testArgs = this.generateExampleCall(tool);
+            }
+            
             toolValidation.testResult = {
               success: false,
               error: error.message,
-              testArgs: test_params[tool.name] || this.generateExampleCall(tool)  // 即使失败也记录请求参数
+              testArgs  // 即使失败也记录请求参数
             };
             
             // 分析错误类型
@@ -1415,8 +1440,26 @@ ${markdownReport}`,
           break;
           
         case 'call_tool':
-          const toolName = request_data.name || 'test_tool';
-          const toolArgs = request_data.arguments || {};
+          // 提供更友好的错误提示
+          if (!request_data.name && !request_data.toolName) {
+            throw new Error(
+              "call_tool请求需要指定工具名。正确格式：{\"name\": \"工具名\", \"arguments\": {参数}}。" +
+              "例如：{\"name\": \"add\", \"arguments\": {\"a\": 1, \"b\": 2}}"
+            );
+          }
+          
+          // 兼容多种格式
+          const toolName = request_data.name || request_data.toolName || 'test_tool';
+          const toolArgs = request_data.arguments || request_data.parameters || request_data.params || {};
+          
+          // 如果用户使用了错误的字段名，给出提示
+          if (request_data.toolName || request_data.parameters || request_data.params) {
+            console.error(
+              "注意：建议使用标准格式 {\"name\": ..., \"arguments\": ...}，" +
+              "但我们已自动转换了您的输入"
+            );
+          }
+          
           result.request = {
             method: 'tools/call',
             params: {
