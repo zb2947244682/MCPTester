@@ -1,5 +1,5 @@
 {
-  "name": "mcp-tester",
+  "name": "@zb2947244682/mcp-tester",
   "version": "1.0.0",
   "description": "用于测试MCP工具的MCP工具",
   "type": "module",
