@@ -10,8 +10,194 @@ import { spawn, exec } from "child_process";
 import { promisify } from "util";
 import path from "path";
 import fs from "fs/promises";
+import { EventEmitter } from "events";
 
 const execAsync = promisify(exec);
+
+// MCP客户端类，用于真实的MCP通信
+class MCPClient extends EventEmitter {
+  constructor() {
+    super();
+    this.process = null;
+    this.messageBuffer = '';
+    this.pendingRequests = new Map();
+    this.nextId = 1;
+    this.initialized = false;
+    this.tools = [];
+    this.resources = [];
+    this.prompts = [];
+  }
+
+  async connect(command, args = []) {
+    return new Promise((resolve, reject) => {
+      try {
+        // 启动MCP服务器进程
+        this.process = spawn(command, args, {
+          stdio: 'pipe',
+          shell: process.platform === 'win32'
+        });
+
+        // 处理stdout数据
+        this.process.stdout.on('data', (data) => {
+          this.messageBuffer += data.toString();
+          this.processMessages();
+        });
+
+        // 处理stderr（调试信息）
+        this.process.stderr.on('data', (data) => {
+          console.error('[MCP Server Debug]:', data.toString());
+        });
+
+        // 处理进程错误
+        this.process.on('error', (error) => {
+          reject(new Error(`启动MCP服务器失败: ${error.message}`));
+        });
+
+        // 进程退出处理
+        this.process.on('exit', (code, signal) => {
+          if (code !== 0 && code !== null && signal !== 'SIGTERM') {
+            console.error(`MCP服务器异常退出，退出码: ${code}, 信号: ${signal}`);
+          }
+        });
+
+        // 延迟一下确保进程启动
+        setTimeout(() => resolve(), 500);
+      } catch (error) {
+        reject(error);
+      }
+    });
+  }
+
+  processMessages() {
+    const lines = this.messageBuffer.split('\n');
+    this.messageBuffer = lines.pop() || '';
+
+    for (const line of lines) {
+      if (line.trim()) {
+        try {
+          const message = JSON.parse(line.trim());
+          this.handleMessage(message);
+        } catch (e) {
+          // 忽略非JSON行
+        }
+      }
+    }
+  }
+
+  handleMessage(message) {
+    // 处理响应
+    if (message.id !== undefined) {
+      const pending = this.pendingRequests.get(message.id);
+      if (pending) {
+        if (message.error) {
+          pending.reject(new Error(message.error.message || 'Unknown error'));
+        } else {
+          pending.resolve(message.result);
+        }
+        this.pendingRequests.delete(message.id);
+      }
+    }
+    
+    // 处理通知
+    if (message.method && !message.id) {
+      this.emit('notification', message);
+    }
+  }
+
+  async sendRequest(method, params = {}) {
+    return new Promise((resolve, reject) => {
+      const id = this.nextId++;
+      const request = {
+        jsonrpc: '2.0',
+        id,
+        method,
+        params
+      };
+
+      this.pendingRequests.set(id, { resolve, reject });
+
+      try {
+        this.process.stdin.write(JSON.stringify(request) + '\n');
+      } catch (error) {
+        this.pendingRequests.delete(id);
+        reject(error);
+      }
+
+      // 设置超时
+      setTimeout(() => {
+        if (this.pendingRequests.has(id)) {
+          this.pendingRequests.delete(id);
+          reject(new Error(`请求超时: ${method}`));
+        }
+      }, 30000);
+    });
+  }
+
+  async initialize() {
+    const result = await this.sendRequest('initialize', {
+      protocolVersion: '2024-11-05',
+      capabilities: {},
+      clientInfo: { name: 'mcp-tester', version: '1.0.0' }
+    });
+    
+    this.initialized = true;
+    
+    // 发送initialized通知
+    try {
+      this.process.stdin.write(JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'notifications/initialized'
+      }) + '\n');
+    } catch (e) {
+      // 忽略错误
+    }
+    
+    return result;
+  }
+
+  async listTools() {
+    const result = await this.sendRequest('tools/list');
+    this.tools = result.tools || [];
+    return this.tools;
+  }
+
+  async callTool(name, args = {}) {
+    return await this.sendRequest('tools/call', {
+      name,
+      arguments: args
+    });
+  }
+
+  async listResources() {
+    try {
+      const result = await this.sendRequest('resources/list');
+      this.resources = result.resources || [];
+      return this.resources;
+    } catch (e) {
+      // 服务器可能不支持resources
+      return [];
+    }
+  }
+
+  async listPrompts() {
+    try {
+      const result = await this.sendRequest('prompts/list');
+      this.prompts = result.prompts || [];
+      return this.prompts;
+    } catch (e) {
+      // 服务器可能不支持prompts
+      return [];
+    }
+  }
+
+  disconnect() {
+    if (this.process) {
+      this.process.kill();
+      this.process = null;
+    }
+    this.pendingRequests.clear();
+  }
+}
 
 class MCPTester {
   constructor() {
@@ -76,7 +262,7 @@ class MCPTester {
                 },
                 test_params: {
                   type: "object",
-                  description: "测试工具时使用的参数",
+                  description: "测试工具时使用的参数。如果指定了tool_name，直接传递该工具的参数；否则传递一个对象，键为工具名，值为对应参数。示例：测试单个工具时 {\"a\": 10, \"b\": 20}，测试多个工具时 {\"add\": {\"a\": 10, \"b\": 20}, \"multiply\": {\"x\": 3, \"y\": 4}}",
                   default: {},
                 },
               },
@@ -147,7 +333,7 @@ class MCPTester {
                 },
                 request_data: {
                   type: "object",
-                  description: "请求数据",
+                  description: "请求数据。对于call_tool类型，使用格式：{\"name\": \"工具名\", \"arguments\": {参数}}。示例：{\"name\": \"add\", \"arguments\": {\"a\": 1, \"b\": 2}}",
                   default: {},
                 },
               },
@@ -216,169 +402,530 @@ class MCPTester {
     } catch (error) {
       throw new Error(`找不到文件: ${scriptPath}. 请检查路径是否正确。原始路径: ${server_command}`);
     }
-    
-    return new Promise((resolve, reject) => {
-      const timeoutId = setTimeout(() => {
-        if (childProcess) {
-          childProcess.kill();
-        }
-        reject(new Error(`测试超时 (${timeout}秒)`));
-      }, timeout * 1000);
 
-      // 启动MCP服务器 - 直接使用spawn而不是嵌套的node -e
-      const childProcess = spawn(executable, [scriptPath, ...server_args], { 
-        stdio: 'pipe',
-        shell: process.platform === 'win32' // Windows需要shell
-      });
-        
-        let output = '';
-        let errorOutput = '';
-        
-        childProcess.stdout.on('data', (data) => {
-          output += data.toString();
-        });
-        
-        childProcess.stderr.on('data', (data) => {
-          errorOutput += data.toString();
-        });
-        
-        // 测试基本MCP协议
-        setTimeout(() => {
-          // 发送初始化请求
-          const initRequest = {
-            jsonrpc: '2.0',
-            id: 1,
-            method: 'initialize',
-            params: {
-              protocolVersion: '2024-11-05',
-              capabilities: {},
-              clientInfo: { name: 'mcp-tester', version: '1.0.0' }
-            }
-          };
-          
-          try {
-            childProcess.stdin.write(JSON.stringify(initRequest) + '\n');
-          } catch (e) {
-            console.error('写入初始化请求失败:', e);
-          }
-          
-          setTimeout(() => {
-            // 发送list_tools请求
-            const listToolsRequest = {
-              jsonrpc: '2.0',
-              id: 2,
-              method: 'tools/list'
-            };
-            
-            try {
-              childProcess.stdin.write(JSON.stringify(listToolsRequest) + '\n');
-            } catch (e) {
-              console.error('写入工具列表请求失败:', e);
-            }
-            
-            setTimeout(() => {
-              childProcess.kill();
-              clearTimeout(timeoutId);
-              resolve({
-                content: [
-                  {
-                    type: "text",
-                    text: `MCP服务器测试结果:
-成功启动: ${output.length > 0 || errorOutput.length > 0}
-输出内容: ${output || '无输出'}
-错误内容: ${errorOutput || '无错误'}
-测试时间: ${new Date().toISOString()}
-服务器命令: ${server_command}`,
-                  },
-                ],
-              });
-            }, 2000);
-          }, 1000);
-        }, 1000);
-        
-        childProcess.on('error', (error) => {
-          clearTimeout(timeoutId);
-          reject(new Error(`启动服务器失败: ${error.message}`));
-        });
-        
-        childProcess.on('exit', (code, signal) => {
-          clearTimeout(timeoutId);
-          if (code !== 0 && code !== null && signal !== 'SIGTERM') {
-            reject(new Error(`服务器异常退出，退出码: ${code}, 信号: ${signal}`));
-          }
-        });
-      });
-  }
-
-  async validateMCPTools(args) {
-    const { server_command, tool_name, test_params = {} } = args;
-    
-    // 实现工具验证逻辑
-    const validation_script = `
-      const { spawn } = require('child_process');
-      const server = spawn('${server_command.split(' ')[0]}', ['${server_command.split(' ').slice(1).join("', '")}']);
-      
-      let tools = [];
-      let validationResults = [];
-      
-      // 模拟工具验证过程
-      setTimeout(() => {
-        const results = {
-          server_responsive: true,
-          tools_discovered: tools.length,
-          validation_results: validationResults,
-          specific_tool: tool_name ? \`测试工具: \${tool_name}\` : '测试所有工具'
-        };
-        
-        console.log(JSON.stringify(results));
-        server.kill();
-      }, 3000);
-    `;
+    const client = new MCPClient();
+    const startTime = Date.now();
+    let testResults = {
+      serverStartup: false,
+      initialization: false,
+      toolsListed: false,
+      toolsCount: 0,
+      tools: [],
+      capabilities: {},
+      errors: [],
+      timings: {}
+    };
 
     try {
-      const { stdout } = await execAsync(`node -e "${validation_script}"`);
-      return {
-        content: [
-          {
-            type: "text",
-            text: `工具验证结果:\n${stdout}`,
-          },
-        ],
-      };
-    } catch (error) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `验证失败: ${error.message}`,
-          },
-        ],
-      };
-    }
-  }
+      // 连接到MCP服务器
+      await client.connect(executable, [scriptPath, ...server_args]);
+      testResults.serverStartup = true;
+      testResults.timings.startup = Date.now() - startTime;
 
-  async benchmarkMCPPerformance(args) {
-    const { server_command, iterations = 10, concurrent_requests = 1 } = args;
-    
-    const benchmarkResults = {
-      server_command,
-      iterations,
-      concurrent_requests,
-      start_time: new Date().toISOString(),
-      avg_response_time: Math.random() * 100 + 50, // 模拟数据
-      success_rate: 0.95 + Math.random() * 0.05,
-      errors: [],
-      memory_usage: {
-        peak_memory: Math.floor(Math.random() * 100) + 50,
-        avg_memory: Math.floor(Math.random() * 80) + 30,
-      },
-    };
+      // 初始化
+      const initStartTime = Date.now();
+      const initResult = await client.initialize();
+      testResults.initialization = true;
+      testResults.capabilities = initResult.capabilities || {};
+      testResults.serverInfo = initResult.serverInfo || {};
+      testResults.timings.initialization = Date.now() - initStartTime;
+
+      // 获取工具列表
+      const toolsStartTime = Date.now();
+      const tools = await client.listTools();
+      testResults.toolsListed = true;
+      testResults.toolsCount = tools.length;
+      testResults.tools = tools;
+      testResults.timings.listTools = Date.now() - toolsStartTime;
+
+      // 尝试获取资源和提示（如果支持）
+      try {
+        const resources = await client.listResources();
+        testResults.resourcesCount = resources.length;
+        testResults.resources = resources;
+      } catch (e) {
+        // 忽略，可能不支持
+      }
+
+      try {
+        const prompts = await client.listPrompts();
+        testResults.promptsCount = prompts.length;
+        testResults.prompts = prompts;
+      } catch (e) {
+        // 忽略，可能不支持
+      }
+
+      // 测试第一个工具（如果有）
+      if (tools.length > 0) {
+        const firstTool = tools[0];
+        const testArgs = this.generateExampleCall(firstTool);
+        try {
+          const toolStartTime = Date.now();
+          const result = await client.callTool(firstTool.name, testArgs);
+          testResults.sampleToolCall = {
+            tool: firstTool.name,
+            args: testArgs,
+            success: true,
+            response: result,
+            executionTime: Date.now() - toolStartTime
+          };
+        } catch (e) {
+          testResults.sampleToolCall = {
+            tool: firstTool.name,
+            args: testArgs,  // 保存请求参数，即使调用失败
+            success: false,
+            error: e.message
+          };
+        }
+      }
+
+      testResults.timings.total = Date.now() - startTime;
+
+    } catch (error) {
+      testResults.errors.push(error.message);
+    } finally {
+      client.disconnect();
+    }
+
+    // 生成测试报告
+    const report = `# MCP服务器测试结果
+
+## 📊 测试概览
+- **服务器命令**: \`${server_command}\`
+- **测试时间**: ${new Date().toISOString()}
+- **总耗时**: ${testResults.timings.total || 0}ms
+
+## ✅ 连接状态
+- **服务器启动**: ${testResults.serverStartup ? '✅ 成功' : '❌ 失败'}
+- **协议初始化**: ${testResults.initialization ? '✅ 成功' : '❌ 失败'}
+- **工具列表获取**: ${testResults.toolsListed ? '✅ 成功' : '❌ 失败'}
+
+## 🔧 服务器信息
+${testResults.serverInfo ? `- **名称**: ${testResults.serverInfo.name || '未知'}
+- **版本**: ${testResults.serverInfo.version || '未知'}` : '未提供服务器信息'}
+
+## 📦 功能支持
+- **工具数量**: ${testResults.toolsCount}
+- **资源数量**: ${testResults.resourcesCount !== undefined ? testResults.resourcesCount : '不支持'}
+- **提示数量**: ${testResults.promptsCount !== undefined ? testResults.promptsCount : '不支持'}
+
+## 🛠️ 工具列表
+${testResults.tools.length > 0 ? testResults.tools.map((tool, i) => 
+  `${i + 1}. **${tool.name}**\n   - ${tool.description || '无描述'}`
+).join('\n') : '未发现任何工具'}
+
+## ⚡ 性能指标
+- **启动时间**: ${testResults.timings.startup || 0}ms
+- **初始化时间**: ${testResults.timings.initialization || 0}ms
+- **工具列表获取**: ${testResults.timings.listTools || 0}ms
+
+${testResults.sampleToolCall ? `## 🧪 工具测试示例
+### 测试工具: ${testResults.sampleToolCall.tool}
+- **测试结果**: ${testResults.sampleToolCall.success ? '✅ 成功' : '❌ 失败'}
+${testResults.sampleToolCall.executionTime ? `- **执行时间**: ${testResults.sampleToolCall.executionTime}ms` : ''}
+${testResults.sampleToolCall.error ? `- **错误信息**: ${testResults.sampleToolCall.error}` : ''}
+
+#### 请求参数:
+\`\`\`json
+${JSON.stringify(testResults.sampleToolCall.args, null, 2)}
+\`\`\`
+
+${testResults.sampleToolCall.response ? `#### 响应结果:
+\`\`\`json
+${JSON.stringify(testResults.sampleToolCall.response, null, 2)}
+\`\`\`` : ''}` : ''}
+
+${testResults.errors.length > 0 ? `## ⚠️ 错误信息
+${testResults.errors.map(e => `- ${e}`).join('\n')}` : ''}`;
 
     return {
       content: [
         {
           type: "text",
-          text: `性能基准测试结果:\n${JSON.stringify(benchmarkResults, null, 2)}`,
+          text: report,
+        },
+      ],
+    };
+  }
+
+  async validateMCPTools(args) {
+    const { server_command, tool_name, test_params = {} } = args;
+    
+    if (!server_command) {
+      throw new Error("请指定server_command参数");
+    }
+
+    // 处理命令
+    const normalizedCommand = server_command.replace(/\\/g, '/');
+    const commandParts = normalizedCommand.split(' ');
+    const executable = commandParts[0];
+    const scriptPath = commandParts.slice(1).join(' ');
+
+    const client = new MCPClient();
+    const validationResults = {
+      totalTools: 0,
+      validatedTools: [],
+      schemaValidation: [],
+      errors: [],
+      warnings: []
+    };
+
+    try {
+      // 连接并初始化
+      await client.connect(executable, [scriptPath]);
+      await client.initialize();
+      
+      // 获取工具列表
+      const tools = await client.listTools();
+      validationResults.totalTools = tools.length;
+
+      // 过滤要测试的工具
+      const toolsToTest = tool_name 
+        ? tools.filter(t => t.name === tool_name)
+        : tools;
+
+      if (tool_name && toolsToTest.length === 0) {
+        throw new Error(`未找到工具: ${tool_name}`);
+      }
+
+      // 验证每个工具
+      for (const tool of toolsToTest) {
+        const toolValidation = {
+          name: tool.name,
+          description: tool.description,
+          schemaValid: true,
+          testResult: null,
+          issues: []
+        };
+
+        // 验证schema
+        if (!tool.inputSchema) {
+          toolValidation.issues.push('缺少inputSchema');
+          toolValidation.schemaValid = false;
+        } else {
+          // 检查schema结构
+          if (!tool.inputSchema.type) {
+            toolValidation.issues.push('inputSchema缺少type字段');
+            toolValidation.schemaValid = false;
+          }
+          if (tool.inputSchema.type === 'object' && !tool.inputSchema.properties) {
+            toolValidation.issues.push('object类型的schema缺少properties');
+            toolValidation.schemaValid = false;
+          }
+        }
+
+        // 尝试调用工具进行测试
+        if (toolValidation.schemaValid) {
+          try {
+            // 智能处理test_params：
+            // 1. 如果指定了tool_name且test_params不为空，直接使用test_params作为参数
+            // 2. 否则，从test_params[tool.name]获取参数
+            // 3. 如果都没有，生成示例参数
+            let testArgs;
+            if (tool_name && Object.keys(test_params).length > 0 && !test_params[tool.name]) {
+              // 测试单个工具时，直接使用test_params
+              testArgs = test_params;
+            } else if (test_params[tool.name]) {
+              // 从test_params对象中获取对应工具的参数
+              testArgs = test_params[tool.name];
+            } else {
+              // 生成示例参数
+              testArgs = this.generateExampleCall(tool);
+            }
+            
+            const startTime = Date.now();
+            const result = await client.callTool(tool.name, testArgs);
+            const executionTime = Date.now() - startTime;
+
+            toolValidation.testResult = {
+              success: true,
+              executionTime,
+              responseValid: this.validateToolResponse(result),
+              testArgs,
+              actualResponse: result  // 保存实际响应
+            };
+
+            if (!toolValidation.testResult.responseValid) {
+              toolValidation.issues.push('响应格式不符合MCP规范');
+            }
+          } catch (error) {
+            // 同样的逻辑处理失败时的testArgs
+            let testArgs;
+            if (tool_name && Object.keys(test_params).length > 0 && !test_params[tool.name]) {
+              testArgs = test_params;
+            } else if (test_params[tool.name]) {
+              testArgs = test_params[tool.name];
+            } else {
+              testArgs = this.generateExampleCall(tool);
+            }
+            
+            toolValidation.testResult = {
+              success: false,
+              error: error.message,
+              testArgs  // 即使失败也记录请求参数
+            };
+            
+            // 分析错误类型
+            if (error.message.includes('required')) {
+              toolValidation.issues.push('必需参数验证失败');
+            } else if (error.message.includes('type')) {
+              toolValidation.issues.push('参数类型验证失败');
+            }
+          }
+        }
+
+        validationResults.validatedTools.push(toolValidation);
+        validationResults.schemaValidation.push({
+          tool: tool.name,
+          valid: toolValidation.schemaValid,
+          issues: toolValidation.issues
+        });
+      }
+
+    } catch (error) {
+      validationResults.errors.push(error.message);
+    } finally {
+      client.disconnect();
+    }
+
+    // 生成验证报告
+    const report = `# MCP工具验证报告
+
+## 📊 验证概览
+- **测试范围**: ${tool_name || '所有工具'}
+- **工具总数**: ${validationResults.totalTools}
+- **验证工具数**: ${validationResults.validatedTools.length}
+- **验证时间**: ${new Date().toISOString()}
+
+## 🔍 详细验证结果
+
+${validationResults.validatedTools.map(tool => {
+  const statusIcon = tool.schemaValid && tool.testResult?.success ? '✅' : 
+                     tool.schemaValid ? '⚠️' : '❌';
+  
+  return `### ${statusIcon} ${tool.name}
+
+**描述**: ${tool.description || '无描述'}
+
+**Schema验证**: ${tool.schemaValid ? '✅ 通过' : '❌ 失败'}
+
+${tool.testResult ? `**功能测试**: ${tool.testResult.success ? '✅ 成功' : '❌ 失败'}
+${tool.testResult.executionTime ? `- 执行时间: ${tool.testResult.executionTime}ms` : ''}
+${tool.testResult.error ? `- 错误: ${tool.testResult.error}` : ''}
+${tool.testResult.responseValid !== undefined ? `- 响应格式: ${tool.testResult.responseValid ? '✅ 有效' : '❌ 无效'}` : ''}
+
+#### 📤 请求参数:
+\`\`\`json
+${JSON.stringify(tool.testResult.testArgs, null, 2)}
+\`\`\`
+
+${tool.testResult.actualResponse ? `#### 📥 实际响应:
+\`\`\`json
+${JSON.stringify(tool.testResult.actualResponse, null, 2)}
+\`\`\`` : ''}` : '**功能测试**: 未执行'}
+
+${tool.issues.length > 0 ? `**发现的问题**:\n${tool.issues.map(i => `- ${i}`).join('\n')}` : '**问题**: 无'}
+`;
+}).join('\n---\n\n')}
+
+## 📈 统计摘要
+
+- **Schema验证通过率**: ${Math.round((validationResults.schemaValidation.filter(v => v.valid).length / validationResults.schemaValidation.length) * 100)}%
+- **功能测试通过率**: ${Math.round((validationResults.validatedTools.filter(t => t.testResult?.success).length / validationResults.validatedTools.length) * 100)}%
+
+${validationResults.errors.length > 0 ? `## ⚠️ 错误\n${validationResults.errors.map(e => `- ${e}`).join('\n')}` : ''}`;
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: report,
+        },
+      ],
+    };
+  }
+
+  // 验证工具响应格式
+  validateToolResponse(response) {
+    if (!response) return false;
+    if (!response.content) return false;
+    if (!Array.isArray(response.content)) return false;
+    
+    for (const item of response.content) {
+      if (!item.type) return false;
+      if (item.type === 'text' && typeof item.text !== 'string') return false;
+    }
+    
+    return true;
+  }
+
+  async benchmarkMCPPerformance(args) {
+    const { server_command, iterations = 10, concurrent_requests = 1 } = args;
+    
+    if (!server_command) {
+      throw new Error("请指定server_command参数");
+    }
+
+    // 处理命令
+    const normalizedCommand = server_command.replace(/\\/g, '/');
+    const commandParts = normalizedCommand.split(' ');
+    const executable = commandParts[0];
+    const scriptPath = commandParts.slice(1).join(' ');
+
+    const client = new MCPClient();
+    const benchmarkResults = {
+      server_command,
+      iterations,
+      concurrent_requests,
+      start_time: new Date().toISOString(),
+      metrics: {
+        initialization: [],
+        listTools: [],
+        toolCalls: {}
+      },
+      summary: {},
+      errors: []
+    };
+
+    try {
+      // 连接到服务器
+      await client.connect(executable, [scriptPath]);
+      
+      // 测试初始化性能
+      console.error(`开始性能测试: ${iterations} 次迭代...`);
+      
+      // 初始化一次以准备服务器
+      await client.initialize();
+      const tools = await client.listTools();
+      
+      // 准备测试工具（选择第一个工具）
+      const testTool = tools.length > 0 ? tools[0] : null;
+      const testArgs = testTool ? this.generateExampleCall(testTool) : {};
+
+      // 运行基准测试
+      for (let i = 0; i < iterations; i++) {
+        // 测试工具列表获取
+        const listStart = Date.now();
+        await client.listTools();
+        benchmarkResults.metrics.listTools.push(Date.now() - listStart);
+
+        // 测试工具调用（如果有工具）
+        if (testTool) {
+          if (!benchmarkResults.metrics.toolCalls[testTool.name]) {
+            benchmarkResults.metrics.toolCalls[testTool.name] = [];
+          }
+          
+          const toolStart = Date.now();
+          try {
+            await client.callTool(testTool.name, testArgs);
+            benchmarkResults.metrics.toolCalls[testTool.name].push(Date.now() - toolStart);
+          } catch (e) {
+            benchmarkResults.errors.push(`工具调用失败 (迭代 ${i + 1}): ${e.message}`);
+          }
+        }
+      }
+
+      // 并发测试（如果指定）
+      if (concurrent_requests > 1 && testTool) {
+        console.error(`执行并发测试: ${concurrent_requests} 个并发请求...`);
+        const concurrentStart = Date.now();
+        const promises = [];
+        
+        for (let i = 0; i < concurrent_requests; i++) {
+          promises.push(client.callTool(testTool.name, testArgs).catch(e => {
+            benchmarkResults.errors.push(`并发请求失败: ${e.message}`);
+            return null;
+          }));
+        }
+        
+        await Promise.all(promises);
+        benchmarkResults.concurrentExecutionTime = Date.now() - concurrentStart;
+      }
+
+      // 计算统计数据
+      const calculateStats = (data) => {
+        if (data.length === 0) return { avg: 0, min: 0, max: 0, p50: 0, p95: 0 };
+        const sorted = [...data].sort((a, b) => a - b);
+        return {
+          avg: Math.round(data.reduce((a, b) => a + b, 0) / data.length),
+          min: sorted[0],
+          max: sorted[sorted.length - 1],
+          p50: sorted[Math.floor(sorted.length * 0.5)],
+          p95: sorted[Math.floor(sorted.length * 0.95)]
+        };
+      };
+
+      benchmarkResults.summary = {
+        listTools: calculateStats(benchmarkResults.metrics.listTools),
+        toolCalls: {}
+      };
+
+      for (const [toolName, times] of Object.entries(benchmarkResults.metrics.toolCalls)) {
+        benchmarkResults.summary.toolCalls[toolName] = calculateStats(times);
+      }
+
+      // 计算成功率
+      const totalAttempts = iterations * (1 + Object.keys(benchmarkResults.metrics.toolCalls).length);
+      const successfulAttempts = totalAttempts - benchmarkResults.errors.length;
+      benchmarkResults.summary.successRate = (successfulAttempts / totalAttempts * 100).toFixed(2) + '%';
+
+    } catch (error) {
+      benchmarkResults.errors.push(`基准测试失败: ${error.message}`);
+    } finally {
+      client.disconnect();
+    }
+
+    benchmarkResults.end_time = new Date().toISOString();
+
+    // 生成性能报告
+    const report = `# MCP性能基准测试报告
+
+## 📊 测试配置
+- **服务器命令**: \`${server_command}\`
+- **迭代次数**: ${iterations}
+- **并发请求**: ${concurrent_requests}
+- **开始时间**: ${benchmarkResults.start_time}
+- **结束时间**: ${benchmarkResults.end_time}
+
+## ⚡ 性能指标
+
+### 工具列表获取 (tools/list)
+- **平均响应时间**: ${benchmarkResults.summary.listTools.avg}ms
+- **最小响应时间**: ${benchmarkResults.summary.listTools.min}ms
+- **最大响应时间**: ${benchmarkResults.summary.listTools.max}ms
+- **P50**: ${benchmarkResults.summary.listTools.p50}ms
+- **P95**: ${benchmarkResults.summary.listTools.p95}ms
+
+${Object.entries(benchmarkResults.summary.toolCalls).map(([toolName, stats]) => `
+### 工具调用: ${toolName}
+- **平均响应时间**: ${stats.avg}ms
+- **最小响应时间**: ${stats.min}ms
+- **最大响应时间**: ${stats.max}ms
+- **P50**: ${stats.p50}ms
+- **P95**: ${stats.p95}ms`).join('\n')}
+
+${benchmarkResults.concurrentExecutionTime ? `### 并发性能
+- **${concurrent_requests} 个并发请求总时间**: ${benchmarkResults.concurrentExecutionTime}ms
+- **平均每请求**: ${Math.round(benchmarkResults.concurrentExecutionTime / concurrent_requests)}ms\n` : ''}
+
+## 📈 可靠性
+- **成功率**: ${benchmarkResults.summary.successRate}
+- **错误数**: ${benchmarkResults.errors.length}
+
+${benchmarkResults.errors.length > 0 ? `## ⚠️ 错误日志
+${benchmarkResults.errors.slice(0, 10).map(e => `- ${e}`).join('\n')}
+${benchmarkResults.errors.length > 10 ? `\n... 还有 ${benchmarkResults.errors.length - 10} 个错误` : ''}` : ''}
+
+## 💡 性能建议
+${benchmarkResults.summary.listTools.avg > 1000 ? '- ⚠️ 工具列表获取时间较长，建议优化服务器响应速度\n' : '- ✅ 工具列表获取响应迅速\n'}
+${benchmarkResults.summary.successRate < 95 ? '- ⚠️ 成功率较低，建议检查服务器稳定性\n' : '- ✅ 服务器稳定性良好\n'}
+${benchmarkResults.summary.listTools.max / benchmarkResults.summary.listTools.min > 10 ? '- ⚠️ 响应时间波动较大，建议优化服务器性能一致性' : '- ✅ 响应时间稳定'}`;
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: report,
         },
       ],
     };
@@ -406,10 +953,49 @@ class MCPTester {
       reportPath = output_file || 'mcp_test_report.md';
     }
 
-    // 实际获取MCP服务器信息
+    // 实际获取MCP服务器信息和测试结果
     let actualToolsInfo = null;
+    let toolTestResults = [];
     try {
       actualToolsInfo = await this.getActualMCPInfo(server_command);
+      
+      // 对每个工具进行简单测试
+      if (actualToolsInfo && actualToolsInfo.tools.length > 0) {
+        const client = new MCPClient();
+        const normalizedCommand = server_command.replace(/\\/g, '/');
+        const commandParts = normalizedCommand.split(' ');
+        const executable = commandParts[0];
+        const scriptPath = commandParts.slice(1).join(' ');
+        
+        await client.connect(executable, [scriptPath]);
+        await client.initialize();
+        
+        // 测试前3个工具作为示例
+        const toolsToTest = actualToolsInfo.tools.slice(0, 3);
+        for (const tool of toolsToTest) {
+          const testArgs = this.generateExampleCall(tool);
+          try {
+            const startTime = Date.now();
+            const response = await client.callTool(tool.name, testArgs);
+            toolTestResults.push({
+              toolName: tool.name,
+              success: true,
+              args: testArgs,
+              response: response,
+              executionTime: Date.now() - startTime
+            });
+          } catch (e) {
+            toolTestResults.push({
+              toolName: tool.name,
+              success: false,
+              args: testArgs,
+              error: e.message
+            });
+          }
+        }
+        
+        client.disconnect();
+      }
     } catch (error) {
       console.error('获取实际MCP信息失败:', error);
     }
@@ -450,14 +1036,19 @@ class MCPTester {
       ],
     };
 
-    // 添加使用示例
-    if (include_examples && actualToolsInfo) {
-      report.usage_examples = actualToolsInfo.tools.slice(0, 3).map(tool => ({
-        tool_name: tool.name,
-        description: tool.description,
-        example_call: this.generateExampleCall(tool),
-        expected_response: this.generateExpectedResponse(tool),
-      }));
+    // 添加使用示例（使用实际测试结果）
+    if (include_examples) {
+      if (toolTestResults.length > 0) {
+        report.usage_examples = toolTestResults;
+      } else if (actualToolsInfo) {
+        // 如果没有实际测试结果，生成示例
+        report.usage_examples = actualToolsInfo.tools.slice(0, 3).map(tool => ({
+          tool_name: tool.name,
+          description: tool.description,
+          example_call: this.generateExampleCall(tool),
+          expected_response: this.generateExpectedResponse(tool),
+        }));
+      }
     }
 
     // 生成Markdown格式的报告内容
@@ -507,22 +1098,45 @@ ${report.performance_metrics.connection_time ? `- **连接时间**: ${report.per
 
 ${report.recommendations.map(rec => `- ${rec}`).join('\n')}
 
-${include_examples && report.usage_examples ? `## 📝 使用示例
+${include_examples && report.usage_examples ? `## 📝 工具测试示例
 
-${report.usage_examples.map(example => `### ${example.tool_name}
+${report.usage_examples.map(example => {
+  // 判断是实际测试结果还是生成的示例
+  if (example.toolName) {
+    // 实际测试结果
+    return `### ${example.toolName}
+
+**测试结果**: ${example.success ? '✅ 成功' : '❌ 失败'}
+${example.executionTime ? `**执行时间**: ${example.executionTime}ms` : ''}
+
+**请求参数**:
+\`\`\`json
+${JSON.stringify(example.args, null, 2)}
+\`\`\`
+
+${example.response ? `**实际响应**:
+\`\`\`json
+${JSON.stringify(example.response, null, 2)}
+\`\`\`` : `**错误信息**: ${example.error}`}
+`;
+  } else {
+    // 生成的示例
+    return `### ${example.tool_name}
 
 **功能描述**: ${example.description}
 
-**调用方式**:
+**示例调用**:
 \`\`\`json
 ${JSON.stringify(example.example_call, null, 2)}
 \`\`\`
 
-**预期响应**:
+**预期响应格式**:
 \`\`\`json
 ${example.expected_response}
 \`\`\`
-`).join('\n')}` : ''}
+`;
+  }
+}).join('\n')}` : ''}
 
 ## 📊 详细测试数据
 
@@ -777,51 +1391,126 @@ ${markdownReport}`,
   async mockMCPClient(args) {
     const { server_command, request_type, request_data = {} } = args;
     
-    const mockRequests = {
-      initialize: {
-        jsonrpc: "2.0",
-        id: 1,
-        method: "initialize",
-        params: {
-          protocolVersion: "2024-11-05",
-          capabilities: {},
-          clientInfo: { name: "mcp-tester", version: "1.0.0" },
-          ...request_data,
-        },
-      },
-      list_tools: {
-        jsonrpc: "2.0",
-        id: 2,
-        method: "tools/list",
-        ...request_data,
-      },
-      call_tool: {
-        jsonrpc: "2.0",
-        id: 3,
-        method: "tools/call",
-        params: {
-          name: request_data.name || "test_tool",
-          arguments: request_data.arguments || {},
-        },
-      },
-      ping: {
-        jsonrpc: "2.0",
-        id: 4,
-        method: "ping",
-        ...request_data,
-      },
+    if (!server_command) {
+      throw new Error("请指定server_command参数");
+    }
+
+    // 处理命令
+    const normalizedCommand = server_command.replace(/\\/g, '/');
+    const commandParts = normalizedCommand.split(' ');
+    const executable = commandParts[0];
+    const scriptPath = commandParts.slice(1).join(' ');
+
+    const client = new MCPClient();
+    let result = {
+      request: null,
+      response: null,
+      error: null,
+      executionTime: 0
     };
 
-    const request = mockRequests[request_type];
-    if (!request) {
-      throw new Error(`不支持的请求类型: ${request_type}`);
+    try {
+      // 连接到服务器
+      await client.connect(executable, [scriptPath]);
+      
+      // 先初始化（如果不是测试初始化本身）
+      if (request_type !== 'initialize') {
+        await client.initialize();
+      }
+
+      const startTime = Date.now();
+      
+      switch (request_type) {
+        case 'initialize':
+          result.request = {
+            method: 'initialize',
+            params: {
+              protocolVersion: '2024-11-05',
+              capabilities: {},
+              clientInfo: { name: 'mcp-tester', version: '1.0.0' },
+              ...request_data
+            }
+          };
+          result.response = await client.initialize();
+          break;
+          
+        case 'list_tools':
+          result.request = { method: 'tools/list' };
+          result.response = await client.listTools();
+          break;
+          
+        case 'call_tool':
+          // 提供更友好的错误提示
+          if (!request_data.name && !request_data.toolName) {
+            throw new Error(
+              "call_tool请求需要指定工具名。正确格式：{\"name\": \"工具名\", \"arguments\": {参数}}。" +
+              "例如：{\"name\": \"add\", \"arguments\": {\"a\": 1, \"b\": 2}}"
+            );
+          }
+          
+          // 兼容多种格式
+          const toolName = request_data.name || request_data.toolName || 'test_tool';
+          const toolArgs = request_data.arguments || request_data.parameters || request_data.params || {};
+          
+          // 如果用户使用了错误的字段名，给出提示
+          if (request_data.toolName || request_data.parameters || request_data.params) {
+            console.error(
+              "注意：建议使用标准格式 {\"name\": ..., \"arguments\": ...}，" +
+              "但我们已自动转换了您的输入"
+            );
+          }
+          
+          result.request = {
+            method: 'tools/call',
+            params: {
+              name: toolName,
+              arguments: toolArgs
+            }
+          };
+          result.response = await client.callTool(toolName, toolArgs);
+          break;
+          
+        case 'ping':
+          result.request = { method: 'ping' };
+          result.response = await client.sendRequest('ping', request_data);
+          break;
+          
+        default:
+          throw new Error(`不支持的请求类型: ${request_type}`);
+      }
+      
+      result.executionTime = Date.now() - startTime;
+      
+    } catch (error) {
+      result.error = error.message;
+    } finally {
+      client.disconnect();
     }
+
+    const report = `# MCP客户端模拟测试
+
+## 📡 连接信息
+- **服务器命令**: \`${server_command}\`
+- **请求类型**: ${request_type}
+- **执行时间**: ${result.executionTime}ms
+
+## 📤 发送的请求
+\`\`\`json
+${JSON.stringify(result.request, null, 2)}
+\`\`\`
+
+## 📥 收到的响应
+${result.error ? `### ❌ 错误
+${result.error}` : `### ✅ 成功
+\`\`\`json
+${JSON.stringify(result.response, null, 2)}
+\`\`\``}`;
 
     return {
       content: [
         {
           type: "text",
-          text: `模拟客户端请求:\n服务器: ${server_command}\n请求类型: ${request_type}\n请求数据:\n${JSON.stringify(request, null, 2)}\n\n注意: 这是一个模拟请求，实际发送需要建立与服务器的连接。`,
+          text: report,
         },
       ],
     };
