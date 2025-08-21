@@ -1505,6 +1505,131 @@ ${markdownReport}`,
 工具描述：${description}`;
   }
 
+  /**
+   * 直接调用MCP工具并返回结果，不生成报告
+   * 这是一个简单的工具调用方法，适合快速测试单个工具功能
+   * 
+   * @param {object} args - 参数对象
+   * @param {string} args.server_command - MCP服务器启动命令，支持多种格式：
+   *   - Windows路径：D:\Path\To\script.js 或 D:/Path/To/script.js
+   *   - 带引号路径："D:\My Path\script.js"
+   *   - 带执行器：node D:\Path\script.js
+   *   - 相对路径：./script.js 或 ../folder/script.js
+   * @param {string} args.tool_name - 要调用的工具名称
+   * @param {object} args.tool_arguments - 传递给工具的参数
+   * @param {boolean} args.return_raw - 是否返回原始响应
+   * @returns {object} 工具调用结果
+   */
+  async callMCPTool(args) {
+    const { server_command, tool_name, tool_arguments = {}, return_raw = false } = args;
+    
+    if (!server_command) {
+      throw new Error("请指定server_command参数");
+    }
+    
+    if (!tool_name) {
+      throw new Error("请指定tool_name参数");
+    }
+
+    // 使用统一的路径解析函数
+    const parsedCommand = parseServerCommand(server_command);
+    const { executable, scriptPath, args: parsedArgs } = parsedCommand;
+    const allArgs = [scriptPath, ...parsedArgs];
+
+    const client = new MCPClient();
+    let callResult = {
+      tool: tool_name,
+      arguments: tool_arguments,
+      success: false,
+      response: null,
+      error: null,
+      executionTime: 0
+    };
+
+    try {
+      // 连接到服务器
+      await client.connect(executable, allArgs);
+      
+      // 初始化
+      await client.initialize();
+      
+      // 获取工具列表以验证工具存在
+      const tools = await client.listTools();
+      const targetTool = tools.find(t => t.name === tool_name);
+      
+      if (!targetTool) {
+        throw new Error(`未找到工具: ${tool_name}。可用的工具: ${tools.map(t => t.name).join(', ')}`);
+      }
+
+      // 调用工具
+      const startTime = Date.now();
+      const response = await client.callTool(tool_name, tool_arguments);
+      callResult.executionTime = Date.now() - startTime;
+      
+      callResult.success = true;
+      callResult.response = response;
+      
+    } catch (error) {
+      callResult.error = error.message;
+    } finally {
+      client.disconnect();
+    }
+
+    // 根据return_raw参数决定返回格式
+    if (return_raw) {
+      // 返回原始响应
+      if (callResult.error) {
+        throw new Error(callResult.error);
+      }
+      return callResult.response;
+    } else {
+      // 返回格式化的报告
+      let report = `## 🔧 工具调用结果\n\n`;
+      report += `**工具名称**: ${tool_name}\n`;
+      report += `**执行状态**: ${callResult.success ? '✅ 成功' : '❌ 失败'}\n`;
+      report += `**执行时间**: ${callResult.executionTime}ms\n\n`;
+      
+      if (Object.keys(tool_arguments).length > 0) {
+        report += `### 📤 请求参数:\n\`\`\`json\n${JSON.stringify(tool_arguments, null, 2)}\n\`\`\`\n\n`;
+      }
+      
+      if (callResult.success) {
+        report += `### 📥 响应结果:\n`;
+        
+        // 尝试从响应中提取文本内容
+        if (callResult.response && callResult.response.content) {
+          const textContent = callResult.response.content
+            .filter(item => item.type === 'text')
+            .map(item => item.text)
+            .join('\n');
+          
+          if (textContent) {
+            report += `${textContent}\n\n`;
+          }
+          
+          // 如果有非文本内容，显示完整响应
+          const hasNonText = callResult.response.content.some(item => item.type !== 'text');
+          if (hasNonText || !textContent) {
+            report += `\n**完整响应**:\n\`\`\`json\n${JSON.stringify(callResult.response, null, 2)}\n\`\`\``;
+          }
+        } else {
+          report += `\`\`\`json\n${JSON.stringify(callResult.response, null, 2)}\n\`\`\``;
+        }
+      } else {
+        report += `### ❌ 错误信息:\n${callResult.error}`;
+      }
+      
+      return {
+        content: [
+          {
+            type: "text",
+            text: report,
+          },
+        ],
+      };
+    }
+  }
+
   async mockMCPClient(args) {
     const { server_command, request_type, request_data = {} } = args;
     
