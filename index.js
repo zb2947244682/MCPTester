@@ -379,22 +379,49 @@ class MCPTester {
           },
           {
             name: "generate_mcp_test_report",
-            description: "生成MCP工具的详细测试报告",
+            description: "生成MCP工具的详细测试报告，支持自定义内容和格式",
             inputSchema: {
               type: "object",
               properties: {
                 server_command: {
                   type: "string",
-                  description: "MCP服务器启动命令",
+                  description: "MCP服务器启动命令。支持Windows反斜杠(\\)、Unix正斜杠(/)等各种路径格式",
                 },
                 output_file: {
                   type: "string",
-                  description: "报告输出文件路径（可选，默认保存到被测试MCP工具的同级目录，格式为.md）",
+                  description: "报告输出文件路径（可选，默认保存到被测试MCP工具的同级目录）",
+                },
+                output_format: {
+                  type: "string",
+                  enum: ["markdown", "json", "html"],
+                  description: "输出格式：markdown(.md)、json(.json)或html(.html)",
+                  default: "markdown",
                 },
                 include_examples: {
                   type: "boolean",
                   description: "是否包含使用示例",
                   default: true,
+                },
+                tools_filter: {
+                  type: "array",
+                  description: "只包含指定的工具（为空则包含所有工具）",
+                  items: { type: "string" },
+                  default: [],
+                },
+                test_tools: {
+                  type: "boolean",
+                  description: "是否实际测试工具（false则只生成静态报告）",
+                  default: true,
+                },
+                include_performance: {
+                  type: "boolean",
+                  description: "是否包含性能测试",
+                  default: false,
+                },
+                performance_iterations: {
+                  type: "number",
+                  description: "性能测试迭代次数",
+                  default: 10,
                 },
               },
               required: ["server_command"],
@@ -456,6 +483,140 @@ class MCPTester {
               required: ["server_command", "tool_name"],
             },
           },
+          {
+            name: "batch_test_tools",
+            description: "批量测试多个MCP工具，支持为每个工具指定不同的测试参数",
+            inputSchema: {
+              type: "object",
+              properties: {
+                server_command: {
+                  type: "string",
+                  description: "MCP服务器启动命令。支持多种格式：\n" +
+                    "- Windows路径（反斜杠）：D:\\Path\\To\\script.js\n" +
+                    "- Unix路径（正斜杠）：D:/Path/To/script.js 或 /path/to/script.js\n" +
+                    "- 带引号路径（处理空格）：\"D:\\My Path\\script.js\"\n" +
+                    "- 带执行器：node D:\\Path\\script.js 或 python script.py\n" +
+                    "- 相对路径：./script.js 或 ../folder/script.js",
+                },
+                test_cases: {
+                  type: "array",
+                  description: "测试用例列表，每个用例包含工具名和参数",
+                  items: {
+                    type: "object",
+                    properties: {
+                      tool_name: {
+                        type: "string",
+                        description: "工具名称"
+                      },
+                      arguments: {
+                        type: "object",
+                        description: "传递给工具的参数"
+                      },
+                      description: {
+                        type: "string",
+                        description: "测试用例描述（可选）"
+                      }
+                    },
+                    required: ["tool_name", "arguments"]
+                  }
+                },
+                parallel: {
+                  type: "boolean",
+                  description: "是否并行执行测试（false为串行）",
+                  default: false
+                },
+                stop_on_error: {
+                  type: "boolean",
+                  description: "遇到错误时是否停止后续测试",
+                  default: false
+                }
+              },
+              required: ["server_command", "test_cases"],
+            },
+          },
+          {
+            name: "benchmark_single_tool",
+            description: "对单个MCP工具进行性能基准测试",
+            inputSchema: {
+              type: "object",
+              properties: {
+                server_command: {
+                  type: "string",
+                  description: "MCP服务器启动命令。支持Windows反斜杠(\\)、Unix正斜杠(/)等各种路径格式",
+                },
+                tool_name: {
+                  type: "string",
+                  description: "要测试的工具名称"
+                },
+                tool_arguments: {
+                  type: "object",
+                  description: "传递给工具的参数",
+                  default: {}
+                },
+                iterations: {
+                  type: "number",
+                  description: "测试迭代次数",
+                  default: 100
+                },
+                concurrent_requests: {
+                  type: "number",
+                  description: "并发请求数",
+                  default: 1
+                },
+                warmup_iterations: {
+                  type: "number",
+                  description: "预热迭代次数（不计入统计）",
+                  default: 5
+                }
+              },
+              required: ["server_command", "tool_name"],
+            },
+          },
+          {
+            name: "test_negative_cases",
+            description: "测试MCP工具的负面用例，验证错误处理能力",
+            inputSchema: {
+              type: "object",
+              properties: {
+                server_command: {
+                  type: "string",
+                  description: "MCP服务器启动命令。支持Windows反斜杠(\\)、Unix正斜杠(/)等各种路径格式",
+                },
+                negative_cases: {
+                  type: "array",
+                  description: "负面测试用例列表",
+                  items: {
+                    type: "object",
+                    properties: {
+                      tool_name: {
+                        type: "string",
+                        description: "工具名称"
+                      },
+                      arguments: {
+                        type: "object",
+                        description: "会导致错误的参数"
+                      },
+                      expected_error: {
+                        type: "string",
+                        description: "预期的错误消息或错误类型（支持正则表达式）"
+                      },
+                      description: {
+                        type: "string",
+                        description: "测试用例描述"
+                      }
+                    },
+                    required: ["tool_name", "arguments"]
+                  }
+                },
+                strict_mode: {
+                  type: "boolean",
+                  description: "严格模式：错误消息必须完全匹配（否则使用包含匹配）",
+                  default: false
+                }
+              },
+              required: ["server_command", "negative_cases"],
+            },
+          },
         ],
       };
     });
@@ -478,6 +639,12 @@ class MCPTester {
             return await this.mockMCPClient(args);
           case "call_mcp_tool":
             return await this.callMCPTool(args);
+          case "batch_test_tools":
+            return await this.batchTestTools(args);
+          case "benchmark_single_tool":
+            return await this.benchmarkSingleTool(args);
+          case "test_negative_cases":
+            return await this.testNegativeCases(args);
           default:
             throw new Error(`未知工具: ${name}`);
         }
@@ -1049,25 +1216,51 @@ ${benchmarkResults.summary.listTools.max / benchmarkResults.summary.listTools.mi
   }
 
   async generateTestReport(args) {
-    const { server_command, output_file, include_examples = true } = args;
+    const { 
+      server_command, 
+      output_file, 
+      output_format = 'markdown',
+      include_examples = true,
+      tools_filter = [],
+      test_tools = true,
+      include_performance = false,
+      performance_iterations = 10
+    } = args;
     
-    // 从server_command中提取目标MCP工具的路径
+    // 使用统一的路径解析函数处理server_command
     let targetMcpPath = '';
     if (server_command) {
-      const commandParts = server_command.replace(/\\/g, '/').split(' ');
-      if (commandParts.length > 1) {
-        targetMcpPath = commandParts.slice(1).join(' ');
-      }
+      const parsedCommand = parseServerCommand(server_command);
+      targetMcpPath = parsedCommand.scriptPath;
     }
     
-    // 生成报告文件名和路径
+    // 确定输出文件扩展名
+    const fileExtension = output_format === 'json' ? '.json' : 
+                         output_format === 'html' ? '.html' : '.md';
+    
+    // 生成报告文件路径
     let reportPath = '';
-    if (targetMcpPath) {
+    if (output_file) {
+      // 如果用户提供了输出文件路径，优先使用（处理引号）
+      reportPath = output_file.replace(/^["']|["']$/g, '').trim();
+      
+      // 如果没有扩展名，添加对应格式的扩展名
+      if (!path.extname(reportPath)) {
+        reportPath += fileExtension;
+      }
+      
+      // 如果是相对路径，转换为绝对路径
+      if (!path.isAbsolute(reportPath)) {
+        reportPath = path.resolve(reportPath);
+      }
+    } else if (targetMcpPath) {
+      // 否则，基于目标MCP工具路径生成默认路径
       const targetDir = path.dirname(path.resolve(targetMcpPath));
       const targetBaseName = path.basename(targetMcpPath, path.extname(targetMcpPath));
-      reportPath = path.join(targetDir, `${targetBaseName}_test_report.md`);
+      reportPath = path.join(targetDir, `${targetBaseName}_test_report${fileExtension}`);
     } else {
-      reportPath = output_file || 'mcp_test_report.md';
+      // 都没有的话，使用默认文件名
+      reportPath = `mcp_test_report${fileExtension}`;
     }
 
     // 实际获取MCP服务器信息和测试结果
@@ -1076,19 +1269,24 @@ ${benchmarkResults.summary.listTools.max / benchmarkResults.summary.listTools.mi
     try {
       actualToolsInfo = await this.getActualMCPInfo(server_command);
       
-      // 对每个工具进行简单测试
-      if (actualToolsInfo && actualToolsInfo.tools.length > 0) {
+      // 对每个工具进行简单测试（如果test_tools为true）
+      if (test_tools && actualToolsInfo && actualToolsInfo.tools.length > 0) {
         const client = new MCPClient();
-        const normalizedCommand = server_command.replace(/\\/g, '/');
-        const commandParts = normalizedCommand.split(' ');
-        const executable = commandParts[0];
-        const scriptPath = commandParts.slice(1).join(' ');
+        const parsedCommand = parseServerCommand(server_command);
+        const { executable, scriptPath, args: parsedArgs } = parsedCommand;
+        const allArgs = [scriptPath, ...parsedArgs];
         
-        await client.connect(executable, [scriptPath]);
+        await client.connect(executable, allArgs);
         await client.initialize();
         
-        // 测试前3个工具作为示例
-        const toolsToTest = actualToolsInfo.tools.slice(0, 3);
+        // 根据tools_filter过滤工具，如果没有指定则测试前3个工具
+        let toolsToTest = actualToolsInfo.tools;
+        if (tools_filter && tools_filter.length > 0) {
+          toolsToTest = actualToolsInfo.tools.filter(t => tools_filter.includes(t.name));
+        } else {
+          toolsToTest = actualToolsInfo.tools.slice(0, 3);
+        }
+        
         for (const tool of toolsToTest) {
           const testArgs = this.generateExampleCall(tool);
           try {
@@ -1266,8 +1464,84 @@ ${JSON.stringify(report, null, 2)}
 *测试工具: mcp-tester v${report.test_summary.tester_version}*
 `;
 
+    // 根据输出格式生成不同的报告内容
+    let finalReport = '';
+    let mimeType = 'text/markdown';
+    
+    if (output_format === 'json') {
+      // JSON格式
+      finalReport = JSON.stringify(report, null, 2);
+      mimeType = 'application/json';
+    } else if (output_format === 'html') {
+      // HTML格式
+      finalReport = `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MCP工具测试报告</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif; 
+               line-height: 1.6; color: #333; max-width: 1200px; margin: 0 auto; padding: 20px; }
+        h1 { color: #2c3e50; border-bottom: 3px solid #3498db; padding-bottom: 10px; }
+        h2 { color: #34495e; margin-top: 30px; }
+        h3 { color: #7f8c8d; }
+        .status { padding: 5px 10px; border-radius: 3px; font-weight: bold; }
+        .success { background-color: #d4edda; color: #155724; }
+        .error { background-color: #f8d7da; color: #721c24; }
+        .warning { background-color: #fff3cd; color: #856404; }
+        pre { background-color: #f4f4f4; padding: 15px; border-radius: 5px; overflow-x: auto; }
+        code { background-color: #f4f4f4; padding: 2px 5px; border-radius: 3px; }
+        table { border-collapse: collapse; width: 100%; margin: 20px 0; }
+        th, td { border: 1px solid #ddd; padding: 12px; text-align: left; }
+        th { background-color: #f2f2f2; font-weight: bold; }
+        .tool-card { border: 1px solid #ddd; border-radius: 5px; padding: 15px; margin: 10px 0; }
+    </style>
+</head>
+<body>
+    <h1>MCP工具测试报告</h1>
+    <div class="summary">
+        <h2>📋 测试概要</h2>
+        <table>
+            <tr><th>测试目标</th><td><code>${server_command || '未指定'}</code></td></tr>
+            <tr><th>测试时间</th><td>${new Date(report.test_summary.test_timestamp).toLocaleString('zh-CN')}</td></tr>
+            <tr><th>测试工具版本</th><td>${report.test_summary.tester_version}</td></tr>
+            <tr><th>目标文件路径</th><td><code>${targetMcpPath || '未指定'}</code></td></tr>
+        </table>
+    </div>
+    <div class="compatibility">
+        <h2>✅ 兼容性检查</h2>
+        <p><span class="${report.compatibility.connection_status === '成功连接' ? 'status success' : 'status error'}">${report.compatibility.connection_status}</span></p>
+        <p>MCP协议版本: ${report.compatibility.mcp_protocol_version}</p>
+        <p>支持的功能: ${report.compatibility.supported_features.join(', ')}</p>
+    </div>
+    <div class="tools">
+        <h2>🔧 工具分析</h2>
+        <p>工具总数: <strong>${report.tools_analysis.total_tools}</strong></p>
+        ${report.tools_analysis.tools_list.length > 0 ? `
+        <h3>检测到的工具列表</h3>
+        <ol>${report.tools_analysis.tools_list.map(name => `<li><strong>${name}</strong></li>`).join('')}</ol>
+        ` : '<p class="status warning">未能获取到工具信息</p>'}
+    </div>
+    ${include_examples && report.usage_examples ? `
+    <div class="examples">
+        <h2>📝 工具测试示例</h2>
+        ${report.usage_examples.map(example => `
+        <div class="tool-card">
+            <h3>${example.tool_name || example.toolName || '工具'}</h3>
+            <pre>${JSON.stringify(example.example_call || example.args || example.arguments, null, 2)}</pre>
+        </div>`).join('')}
+    </div>` : ''}
+</body>
+</html>`;
+      mimeType = 'text/html';
+    } else {
+      // 默认Markdown格式
+      finalReport = markdownReport;
+    }
+    
     try {
-      await fs.writeFile(reportPath, markdownReport, 'utf8');
+      await fs.writeFile(reportPath, finalReport, 'utf8');
       return {
         content: [
           {
@@ -1275,17 +1549,24 @@ ${JSON.stringify(report, null, 2)}
             text: `✅ 测试报告已生成！
 
 📁 **报告位置**: \`${reportPath}\`
-📝 **报告格式**: Markdown (.md)
+📝 **报告格式**: ${output_format === 'json' ? 'JSON (.json)' : 
+                    output_format === 'html' ? 'HTML (.html)' : 'Markdown (.md)'}
 🔧 **检测到的工具数量**: ${report.tools_analysis.total_tools}
 ${report.tools_analysis.tools_list.length > 0 ? `\n🛠️ **工具列表**: ${report.tools_analysis.tools_list.join(', ')}` : ''}
+${tools_filter && tools_filter.length > 0 ? `\n🎯 **过滤的工具**: ${tools_filter.join(', ')}` : ''}
 
 ## 报告内容预览:
 
-${markdownReport.split('\n').slice(0, 25).join('\n')}
+${output_format === 'json' ? 
+  '```json\n' + finalReport.split('\n').slice(0, 20).join('\n') + '\n...\n```' :
+  output_format === 'html' ? 
+  '```html\n' + finalReport.split('\n').slice(0, 20).join('\n') + '\n...\n```' :
+  finalReport.split('\n').slice(0, 25).join('\n')
+}
 
 ...
 
-💡 完整报告已保存，包含了所有检测到的工具详细信息！`,
+💡 完整报告已保存${test_tools ? '，包含了实际测试结果' : '（静态分析，未实际测试）'}！`,
           },
         ],
       };
@@ -1297,10 +1578,17 @@ ${markdownReport.split('\n').slice(0, 25).join('\n')}
             text: `❌ 生成报告失败: ${error.message}
 
 **尝试的保存路径**: \`${reportPath}\`
+**报告格式**: ${output_format === 'json' ? 'JSON' : 
+               output_format === 'html' ? 'HTML' : 'Markdown'}
 
 ## 报告内容（无法保存到文件）:
 
-${markdownReport}`,
+${output_format === 'json' ? 
+  '```json\n' + finalReport + '\n```' :
+  output_format === 'html' ? 
+  '```html\n' + finalReport + '\n```' :
+  finalReport
+}`,
           },
         ],
       };
@@ -1747,6 +2035,654 @@ ${result.error}` : `### ✅ 成功
 \`\`\`json
 ${JSON.stringify(result.response, null, 2)}
 \`\`\``}`;
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: report,
+        },
+      ],
+    };
+  }
+
+  /**
+   * 批量测试多个MCP工具
+   */
+  async batchTestTools(args) {
+    const { server_command, test_cases, parallel = false, stop_on_error = false } = args;
+    
+    if (!server_command) {
+      throw new Error("请指定server_command参数");
+    }
+    
+    if (!test_cases || test_cases.length === 0) {
+      throw new Error("请提供至少一个测试用例");
+    }
+
+    // 使用统一的路径解析函数
+    const parsedCommand = parseServerCommand(server_command);
+    const { executable, scriptPath, args: parsedArgs } = parsedCommand;
+    const allArgs = [scriptPath, ...parsedArgs];
+
+    const client = new MCPClient();
+    const testResults = {
+      total_cases: test_cases.length,
+      successful: 0,
+      failed: 0,
+      execution_time: 0,
+      results: []
+    };
+
+    const startTime = Date.now();
+
+    try {
+      // 连接并初始化
+      await client.connect(executable, allArgs);
+      await client.initialize();
+      
+      // 获取可用工具列表
+      const availableTools = await client.listTools();
+      const toolNames = availableTools.map(t => t.name);
+
+      if (parallel) {
+        // 并行执行测试
+        const promises = test_cases.map(async (testCase) => {
+          const { tool_name, arguments: toolArgs, description } = testCase;
+          
+          if (!toolNames.includes(tool_name)) {
+            return {
+              tool_name,
+              description,
+              success: false,
+              error: `工具 ${tool_name} 不存在`,
+              arguments: toolArgs
+            };
+          }
+
+          try {
+            const toolStart = Date.now();
+            const response = await client.callTool(tool_name, toolArgs);
+            return {
+              tool_name,
+              description,
+              success: true,
+              response,
+              arguments: toolArgs,
+              execution_time: Date.now() - toolStart
+            };
+          } catch (error) {
+            return {
+              tool_name,
+              description,
+              success: false,
+              error: error.message,
+              arguments: toolArgs
+            };
+          }
+        });
+
+        testResults.results = await Promise.all(promises);
+      } else {
+        // 串行执行测试
+        for (const testCase of test_cases) {
+          const { tool_name, arguments: toolArgs, description } = testCase;
+          
+          if (!toolNames.includes(tool_name)) {
+            const result = {
+              tool_name,
+              description,
+              success: false,
+              error: `工具 ${tool_name} 不存在`,
+              arguments: toolArgs
+            };
+            testResults.results.push(result);
+            
+            if (stop_on_error) {
+              break;
+            }
+            continue;
+          }
+
+          try {
+            const toolStart = Date.now();
+            const response = await client.callTool(tool_name, toolArgs);
+            testResults.results.push({
+              tool_name,
+              description,
+              success: true,
+              response,
+              arguments: toolArgs,
+              execution_time: Date.now() - toolStart
+            });
+          } catch (error) {
+            testResults.results.push({
+              tool_name,
+              description,
+              success: false,
+              error: error.message,
+              arguments: toolArgs
+            });
+            
+            if (stop_on_error) {
+              break;
+            }
+          }
+        }
+      }
+
+      // 统计结果
+      testResults.successful = testResults.results.filter(r => r.success).length;
+      testResults.failed = testResults.results.filter(r => !r.success).length;
+      testResults.execution_time = Date.now() - startTime;
+
+    } catch (error) {
+      throw new Error(`批量测试失败: ${error.message}`);
+    } finally {
+      client.disconnect();
+    }
+
+    // 生成报告
+    const report = `# 批量测试报告
+
+## 📊 测试概览
+- **测试用例总数**: ${testResults.total_cases}
+- **成功**: ${testResults.successful} (${Math.round(testResults.successful / testResults.total_cases * 100)}%)
+- **失败**: ${testResults.failed} (${Math.round(testResults.failed / testResults.total_cases * 100)}%)
+- **总执行时间**: ${testResults.execution_time}ms
+- **执行模式**: ${parallel ? '并行' : '串行'}
+
+## 📝 详细结果
+
+${testResults.results.map((result, index) => {
+  const icon = result.success ? '✅' : '❌';
+  let details = `### ${index + 1}. ${icon} ${result.tool_name}`;
+  
+  if (result.description) {
+    details += `\n**描述**: ${result.description}`;
+  }
+  
+  details += `\n**状态**: ${result.success ? '成功' : '失败'}`;
+  
+  if (result.execution_time) {
+    details += `\n**执行时间**: ${result.execution_time}ms`;
+  }
+  
+  details += `\n\n**请求参数**:\n\`\`\`json\n${JSON.stringify(result.arguments, null, 2)}\n\`\`\``;
+  
+  if (result.success && result.response) {
+    // 提取文本响应
+    const textContent = result.response.content
+      ?.filter(item => item.type === 'text')
+      ?.map(item => item.text)
+      ?.join('\n');
+    
+    if (textContent) {
+      details += `\n\n**响应结果**:\n${textContent}`;
+    } else {
+      details += `\n\n**响应结果**:\n\`\`\`json\n${JSON.stringify(result.response, null, 2)}\n\`\`\``;
+    }
+  } else if (!result.success) {
+    details += `\n\n**错误信息**:\n${result.error}`;
+  }
+  
+  return details;
+}).join('\n\n---\n\n')}
+
+## 📈 性能统计
+- **平均执行时间**: ${Math.round(
+  testResults.results
+    .filter(r => r.execution_time)
+    .reduce((sum, r) => sum + r.execution_time, 0) / 
+  testResults.results.filter(r => r.execution_time).length || 0
+)}ms`;
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: report,
+        },
+      ],
+    };
+  }
+
+  /**
+   * 对单个工具进行性能基准测试
+   */
+  async benchmarkSingleTool(args) {
+    const { 
+      server_command, 
+      tool_name, 
+      tool_arguments = {}, 
+      iterations = 100, 
+      concurrent_requests = 1,
+      warmup_iterations = 5 
+    } = args;
+    
+    if (!server_command) {
+      throw new Error("请指定server_command参数");
+    }
+    
+    if (!tool_name) {
+      throw new Error("请指定tool_name参数");
+    }
+
+    // 使用统一的路径解析函数
+    const parsedCommand = parseServerCommand(server_command);
+    const { executable, scriptPath, args: parsedArgs } = parsedCommand;
+    const allArgs = [scriptPath, ...parsedArgs];
+
+    const client = new MCPClient();
+    const benchmarkResults = {
+      tool_name,
+      iterations,
+      concurrent_requests,
+      warmup_iterations,
+      execution_times: [],
+      errors: [],
+      statistics: {}
+    };
+
+    try {
+      // 连接并初始化
+      await client.connect(executable, allArgs);
+      await client.initialize();
+      
+      // 验证工具存在
+      const tools = await client.listTools();
+      if (!tools.some(t => t.name === tool_name)) {
+        throw new Error(`工具 ${tool_name} 不存在`);
+      }
+
+      console.error(`开始性能测试: ${tool_name}`);
+      console.error(`预热迭代: ${warmup_iterations}`);
+      
+      // 预热阶段
+      for (let i = 0; i < warmup_iterations; i++) {
+        try {
+          await client.callTool(tool_name, tool_arguments);
+        } catch (e) {
+          // 预热阶段的错误不计入统计
+        }
+      }
+
+      console.error(`开始正式测试: ${iterations} 次迭代, ${concurrent_requests} 并发`);
+
+      // 正式测试阶段
+      if (concurrent_requests > 1) {
+        // 并发测试
+        const batches = Math.ceil(iterations / concurrent_requests);
+        
+        for (let batch = 0; batch < batches; batch++) {
+          const batchSize = Math.min(concurrent_requests, iterations - batch * concurrent_requests);
+          const promises = [];
+          
+          for (let i = 0; i < batchSize; i++) {
+            const promise = (async () => {
+              const startTime = Date.now();
+              try {
+                await client.callTool(tool_name, tool_arguments);
+                return Date.now() - startTime;
+              } catch (error) {
+                benchmarkResults.errors.push(error.message);
+                return null;
+              }
+            })();
+            promises.push(promise);
+          }
+          
+          const results = await Promise.all(promises);
+          results.forEach(time => {
+            if (time !== null) {
+              benchmarkResults.execution_times.push(time);
+            }
+          });
+        }
+      } else {
+        // 串行测试
+        for (let i = 0; i < iterations; i++) {
+          const startTime = Date.now();
+          try {
+            await client.callTool(tool_name, tool_arguments);
+            benchmarkResults.execution_times.push(Date.now() - startTime);
+          } catch (error) {
+            benchmarkResults.errors.push(error.message);
+          }
+        }
+      }
+
+      // 计算统计数据
+      if (benchmarkResults.execution_times.length > 0) {
+        const sorted = [...benchmarkResults.execution_times].sort((a, b) => a - b);
+        const sum = sorted.reduce((a, b) => a + b, 0);
+        
+        benchmarkResults.statistics = {
+          total_requests: iterations,
+          successful_requests: benchmarkResults.execution_times.length,
+          failed_requests: benchmarkResults.errors.length,
+          avg: Math.round(sum / sorted.length),
+          min: sorted[0],
+          max: sorted[sorted.length - 1],
+          p50: sorted[Math.floor(sorted.length * 0.5)],
+          p90: sorted[Math.floor(sorted.length * 0.9)],
+          p95: sorted[Math.floor(sorted.length * 0.95)],
+          p99: sorted[Math.floor(sorted.length * 0.99)],
+          success_rate: (benchmarkResults.execution_times.length / iterations * 100).toFixed(2) + '%'
+        };
+        
+        // 计算标准差
+        const mean = sum / sorted.length;
+        const variance = sorted.reduce((acc, val) => acc + Math.pow(val - mean, 2), 0) / sorted.length;
+        benchmarkResults.statistics.std_dev = Math.round(Math.sqrt(variance));
+      }
+
+    } catch (error) {
+      throw new Error(`性能测试失败: ${error.message}`);
+    } finally {
+      client.disconnect();
+    }
+
+    // 生成报告
+    const stats = benchmarkResults.statistics;
+    const report = `# 单工具性能基准测试报告
+
+## 🎯 测试目标
+- **工具名称**: ${tool_name}
+- **测试参数**: \`\`\`json
+${JSON.stringify(tool_arguments, null, 2)}
+\`\`\`
+
+## ⚙️ 测试配置
+- **总迭代次数**: ${iterations}
+- **并发请求数**: ${concurrent_requests}
+- **预热迭代**: ${warmup_iterations}
+
+## 📊 性能统计
+- **总请求数**: ${stats.total_requests || iterations}
+- **成功请求**: ${stats.successful_requests || 0}
+- **失败请求**: ${stats.failed_requests || 0}
+- **成功率**: ${stats.success_rate || '0%'}
+
+## ⏱️ 响应时间 (ms)
+| 指标 | 值 |
+|------|-----|
+| 最小值 | ${stats.min || 'N/A'} |
+| 平均值 | ${stats.avg || 'N/A'} |
+| 中位数 (P50) | ${stats.p50 || 'N/A'} |
+| P90 | ${stats.p90 || 'N/A'} |
+| P95 | ${stats.p95 || 'N/A'} |
+| P99 | ${stats.p99 || 'N/A'} |
+| 最大值 | ${stats.max || 'N/A'} |
+| 标准差 | ${stats.std_dev || 'N/A'} |
+
+## 📈 性能分析
+${stats.avg ? `
+- **响应时间稳定性**: ${stats.std_dev < stats.avg * 0.2 ? '✅ 优秀（标准差小于平均值的20%）' : 
+  stats.std_dev < stats.avg * 0.5 ? '⚠️ 良好（标准差小于平均值的50%）' : 
+  '❌ 较差（标准差大于平均值的50%）'}
+- **吞吐量**: 约 ${Math.round(1000 / stats.avg * concurrent_requests)} 请求/秒
+- **性能建议**: ${
+  stats.avg < 10 ? '响应速度极快，性能优秀' :
+  stats.avg < 50 ? '响应速度良好' :
+  stats.avg < 200 ? '响应速度可接受，可考虑优化' :
+  '响应较慢，建议进行性能优化'
+}` : '无足够数据进行分析'}
+
+${benchmarkResults.errors.length > 0 ? `## ⚠️ 错误记录
+- **错误率**: ${(benchmarkResults.errors.length / iterations * 100).toFixed(2)}%
+- **前10个错误**:
+${benchmarkResults.errors.slice(0, 10).map((e, i) => `  ${i + 1}. ${e}`).join('\n')}
+${benchmarkResults.errors.length > 10 ? `\n... 还有 ${benchmarkResults.errors.length - 10} 个错误` : ''}` : ''}`;
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: report,
+        },
+      ],
+    };
+  }
+
+  /**
+   * 测试负面用例
+   */
+  async testNegativeCases(args) {
+    const { server_command, negative_cases, strict_mode = false } = args;
+    
+    if (!server_command) {
+      throw new Error("请指定server_command参数");
+    }
+    
+    if (!negative_cases || negative_cases.length === 0) {
+      throw new Error("请提供至少一个负面测试用例");
+    }
+
+    // 使用统一的路径解析函数
+    const parsedCommand = parseServerCommand(server_command);
+    const { executable, scriptPath, args: parsedArgs } = parsedCommand;
+    const allArgs = [scriptPath, ...parsedArgs];
+
+    const client = new MCPClient();
+    const testResults = {
+      total_cases: negative_cases.length,
+      passed: 0,
+      failed: 0,
+      results: []
+    };
+
+    try {
+      // 连接并初始化
+      await client.connect(executable, allArgs);
+      await client.initialize();
+      
+      // 获取可用工具列表
+      const availableTools = await client.listTools();
+      const toolNames = availableTools.map(t => t.name);
+
+      // 执行负面测试
+      for (const testCase of negative_cases) {
+        const { tool_name, arguments: toolArgs, expected_error, description } = testCase;
+        
+        if (!toolNames.includes(tool_name)) {
+          testResults.results.push({
+            tool_name,
+            description,
+            passed: false,
+            reason: `工具 ${tool_name} 不存在`,
+            arguments: toolArgs,
+            expected_error
+          });
+          continue;
+        }
+
+        try {
+          // 调用工具（预期会失败或返回错误响应）
+          const response = await client.callTool(tool_name, toolArgs);
+          
+          // 检查响应是否包含错误信息
+          let isErrorResponse = false;
+          let errorMessage = '';
+          
+          // 检查响应中的 isError 字段
+          if (response && response.isError === true) {
+            isErrorResponse = true;
+            errorMessage = response.message || response.error || '响应标记为错误';
+          }
+          
+          // 检查 content 中是否包含错误信息
+          if (response && response.content && Array.isArray(response.content)) {
+            for (const item of response.content) {
+              if (item.type === 'text' && item.text) {
+                // 检查文本中是否包含错误标识
+                if (item.text.includes('Error:') || item.text.includes('错误') || 
+                    item.text.includes('isError: true') || item.text.includes('error')) {
+                  isErrorResponse = true;
+                  // 提取错误消息
+                  const errorMatch = item.text.match(/Error:\s*(.+?)(?:\n|$)/i);
+                  if (errorMatch) {
+                    errorMessage = errorMatch[1].trim();
+                  } else {
+                    errorMessage = item.text;
+                  }
+                  break;
+                }
+              }
+            }
+          }
+          
+          if (isErrorResponse) {
+            // 响应包含错误信息，按错误处理
+            let passed = false;
+            let reason = '';
+            
+            if (expected_error) {
+              if (strict_mode) {
+                // 严格模式：完全匹配
+                passed = errorMessage === expected_error || 
+                         (errorMessage && errorMessage.includes(expected_error));
+                reason = passed ? '错误消息匹配（响应中的错误）' : 
+                  `错误消息不匹配。预期: "${expected_error}", 实际: "${errorMessage}"`;
+              } else {
+                // 宽松模式：包含匹配或正则匹配
+                try {
+                  const regex = new RegExp(expected_error, 'i');
+                  passed = regex.test(errorMessage);
+                  reason = passed ? '错误消息匹配正则表达式（响应中的错误）' : 
+                    `错误消息不匹配。模式: "${expected_error}", 实际: "${errorMessage}"`;
+                } catch {
+                  // 如果不是有效的正则，使用包含匹配
+                  passed = errorMessage.toLowerCase().includes(expected_error.toLowerCase());
+                  reason = passed ? '错误消息包含预期文本（响应中的错误）' : 
+                    `错误消息不包含预期文本。预期包含: "${expected_error}", 实际: "${errorMessage}"`;
+                }
+              }
+            } else {
+              // 没有指定预期错误，只要包含错误信息就算通过
+              passed = true;
+              reason = '响应包含错误信息';
+            }
+            
+            testResults.results.push({
+              tool_name,
+              description,
+              passed,
+              reason,
+              arguments: toolArgs,
+              expected_error,
+              actual_error: errorMessage,
+              response_type: '成功响应但包含错误信息'
+            });
+          } else {
+            // 没有抛出错误，也没有错误响应，测试失败
+            testResults.results.push({
+              tool_name,
+              description,
+              passed: false,
+              reason: '预期抛出错误或返回错误响应，但调用成功且无错误信息',
+              arguments: toolArgs,
+              expected_error,
+              actual_response: response
+            });
+          }
+        } catch (error) {
+          // 检查错误是否符合预期
+          let passed = false;
+          let reason = '';
+          
+          if (expected_error) {
+            if (strict_mode) {
+              // 严格模式：完全匹配
+              passed = error.message === expected_error;
+              reason = passed ? '错误消息完全匹配' : 
+                `错误消息不匹配。预期: "${expected_error}", 实际: "${error.message}"`;
+            } else {
+              // 宽松模式：包含匹配或正则匹配
+              try {
+                const regex = new RegExp(expected_error);
+                passed = regex.test(error.message);
+                reason = passed ? '错误消息匹配正则表达式' : 
+                  `错误消息不匹配正则。模式: "${expected_error}", 实际: "${error.message}"`;
+              } catch {
+                // 如果不是有效的正则，使用包含匹配
+                passed = error.message.includes(expected_error);
+                reason = passed ? '错误消息包含预期文本' : 
+                  `错误消息不包含预期文本。预期包含: "${expected_error}", 实际: "${error.message}"`;
+              }
+            }
+          } else {
+            // 没有指定预期错误，只要抛出错误就算通过
+            passed = true;
+            reason = '成功抛出错误';
+          }
+          
+          testResults.results.push({
+            tool_name,
+            description,
+            passed,
+            reason,
+            arguments: toolArgs,
+            expected_error,
+            actual_error: error.message
+          });
+        }
+      }
+
+      // 统计结果
+      testResults.passed = testResults.results.filter(r => r.passed).length;
+      testResults.failed = testResults.results.filter(r => !r.passed).length;
+
+    } catch (error) {
+      throw new Error(`负面测试失败: ${error.message}`);
+    } finally {
+      client.disconnect();
+    }
+
+    // 生成报告
+    const report = `# 负面测试用例报告
+
+## 📊 测试概览
+- **测试用例总数**: ${testResults.total_cases}
+- **通过**: ${testResults.passed} (${Math.round(testResults.passed / testResults.total_cases * 100)}%)
+- **失败**: ${testResults.failed} (${Math.round(testResults.failed / testResults.total_cases * 100)}%)
+- **匹配模式**: ${strict_mode ? '严格匹配' : '宽松匹配（支持正则和包含）'}
+
+## 🔍 详细结果
+
+${testResults.results.map((result, index) => {
+  const icon = result.passed ? '✅' : '❌';
+  let details = `### ${index + 1}. ${icon} ${result.tool_name}`;
+  
+  if (result.description) {
+    details += `\n**描述**: ${result.description}`;
+  }
+  
+  details += `\n**状态**: ${result.passed ? '通过' : '失败'}`;
+  details += `\n**原因**: ${result.reason}`;
+  
+  details += `\n\n**测试参数**:\n\`\`\`json\n${JSON.stringify(result.arguments, null, 2)}\n\`\`\``;
+  
+  if (result.expected_error) {
+    details += `\n\n**预期错误**: ${result.expected_error}`;
+  }
+  
+  if (result.actual_error) {
+    details += `\n**实际错误**: ${result.actual_error}`;
+  } else if (result.actual_response) {
+    details += `\n\n**实际响应**（预期失败但成功）:\n\`\`\`json\n${JSON.stringify(result.actual_response, null, 2)}\n\`\`\``;
+  }
+  
+  return details;
+}).join('\n\n---\n\n')}
+
+## 💡 测试建议
+${testResults.failed > 0 ? `
+- ⚠️ 有 ${testResults.failed} 个测试用例未按预期行为
+- 请检查：
+  1. 错误消息格式是否发生变化
+  2. 工具的错误处理逻辑是否正确
+  3. 预期错误消息是否准确` : '✅ 所有负面测试用例都按预期行为，错误处理机制工作正常'}`;
 
     return {
       content: [
