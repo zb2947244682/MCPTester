@@ -4,6 +4,8 @@
 
 这是一个专为 MCP (Model Context Protocol) 服务设计的测试工具。它提供了一套全面的功能，用于验证 MCP 服务器的连接、初始化、工具schema、功能正确性，并能进行性能基准测试和负面用例测试。
 
+**NPM 仓库地址:** `https://www.npmjs.com/package/@zb2947244682/mcp-tester`
+
 ## 项目功能
 
 此 MCP Tester 服务提供了以下测试工具：
@@ -20,9 +22,7 @@
 
 ## 如何配置到 Cursor 中
 
-要将此 MCP Tester 服务配置到 Cursor 中，您可以将以下 JSON 片段添加到您的 `c:\Users\Jimmy\.cursor\mcp.json` 文件中 (如果该文件不存在，请创建它)。
-
-**请确保在添加前，`c:\Users\Jimmy\.cursor\mcp.json` 是一个有效的 JSON 对象。**
+将以下配置添加到您的 Cursor `mcp.json` 文件中：
 
 ```json
 {
