@@ -14,6 +14,90 @@ import { EventEmitter } from "events";
 
 const execAsync = promisify(exec);
 
+// 路径处理工具函数
+/**
+ * 标准化路径处理函数，支持多种路径格式
+ * @param {string} inputPath - 输入的路径，支持以下格式：
+ *   - Windows风格：D:\Path\To\File.js 或 "D:\Path\To\File.js"
+ *   - Unix风格：/path/to/file.js 或 D:/Path/To/File.js
+ *   - 带空格的路径："D:\My Path\File.js"
+ *   - 相对路径：./file.js 或 ../folder/file.js
+ *   - 带命令的路径：node D:\Path\script.js 或 "node" "D:\Path\script.js"
+ * @returns {object} 返回 {executable, scriptPath, args} 对象
+ */
+function parseServerCommand(inputPath) {
+  if (!inputPath) {
+    throw new Error('路径不能为空');
+  }
+
+  // 去除首尾引号（如果有）
+  let command = inputPath.trim();
+  if ((command.startsWith('"') && command.endsWith('"')) || 
+      (command.startsWith("'") && command.endsWith("'"))) {
+    command = command.slice(1, -1);
+  }
+
+  // 将所有反斜杠转换为正斜杠，统一路径格式
+  command = command.replace(/\\/g, '/');
+
+  // 解析命令和参数
+  // 支持格式："node path/to/script.js arg1 arg2" 或 "node" "path/to/script.js" "arg1"
+  const parts = [];
+  let current = '';
+  let inQuotes = false;
+  
+  for (let i = 0; i < command.length; i++) {
+    const char = command[i];
+    if (char === '"' || char === "'") {
+      inQuotes = !inQuotes;
+    } else if (char === ' ' && !inQuotes) {
+      if (current) {
+        parts.push(current);
+        current = '';
+      }
+    } else {
+      current += char;
+    }
+  }
+  if (current) {
+    parts.push(current);
+  }
+
+  // 判断第一部分是否是可执行文件（node, python, deno等）
+  const executableCommands = ['node', 'python', 'python3', 'deno', 'bun', 'tsx', 'ts-node'];
+  let executable = 'node'; // 默认使用node
+  let scriptPath = '';
+  let args = [];
+
+  if (parts.length === 0) {
+    throw new Error('无效的命令格式');
+  }
+
+  // 检查第一部分是否是可执行命令
+  const firstPart = parts[0].toLowerCase();
+  if (executableCommands.includes(firstPart)) {
+    executable = parts[0];
+    scriptPath = parts[1] || '';
+    args = parts.slice(2);
+  } else {
+    // 假设整个输入是脚本路径
+    scriptPath = parts[0];
+    args = parts.slice(1);
+  }
+
+  // 将路径恢复为系统原生格式（Windows下使用反斜杠）
+  if (process.platform === 'win32' && scriptPath) {
+    // 但保持正斜杠，因为Node.js在Windows上也支持正斜杠
+    // scriptPath = scriptPath.replace(/\//g, '\\');
+  }
+
+  return {
+    executable,
+    scriptPath,
+    args
+  };
+}
+
 // MCP客户端类，用于真实的MCP通信
 class MCPClient extends EventEmitter {
   constructor() {
@@ -340,6 +424,38 @@ class MCPTester {
               required: ["server_command", "request_type"],
             },
           },
+          {
+            name: "call_mcp_tool",
+            description: "直接调用MCP工具并返回结果，不生成报告。适用于快速测试单个工具功能。",
+            inputSchema: {
+              type: "object",
+              properties: {
+                server_command: {
+                  type: "string",
+                  description: "MCP服务器启动命令。支持多种格式：\n" +
+                    "- Windows路径：D:\\Path\\To\\script.js 或 D:/Path/To/script.js\n" +
+                    "- 带引号路径：\"D:\\My Path\\script.js\"\n" +
+                    "- 带执行器：node D:\\Path\\script.js\n" +
+                    "- 相对路径：./script.js 或 ../folder/script.js",
+                },
+                tool_name: {
+                  type: "string",
+                  description: "要调用的工具名称",
+                },
+                tool_arguments: {
+                  type: "object",
+                  description: "传递给工具的参数。根据目标工具的schema提供相应的参数。",
+                  default: {},
+                },
+                return_raw: {
+                  type: "boolean",
+                  description: "是否返回原始响应（true）或格式化后的文本（false）",
+                  default: false,
+                },
+              },
+              required: ["server_command", "tool_name"],
+            },
+          },
         ],
       };
     });
@@ -360,6 +476,8 @@ class MCPTester {
             return await this.generateTestReport(args);
           case "mock_mcp_client":
             return await this.mockMCPClient(args);
+          case "call_mcp_tool":
+            return await this.callMCPTool(args);
           default:
             throw new Error(`未知工具: ${name}`);
         }
@@ -389,18 +507,18 @@ class MCPTester {
       throw new Error("请指定server_command参数或设置TARGET_MCP_SERVER环境变量");
     }
 
-    // 处理Windows路径问题
-    const normalizedCommand = server_command.replace(/\\/g, '/');
-    const commandParts = normalizedCommand.split(' ');
-    const executable = commandParts[0];
-    const scriptPath = commandParts.slice(1).join(' ');
+    // 使用统一的路径解析函数
+    // 支持多种路径格式：Windows反斜杠、Unix正斜杠、带引号、带空格等
+    const parsedCommand = parseServerCommand(server_command);
+    const { executable, scriptPath, args: parsedArgs } = parsedCommand;
+    const allArgs = [scriptPath, ...parsedArgs, ...server_args];
     
     // 验证文件是否存在
     try {
       const fullPath = path.resolve(scriptPath);
       await fs.access(fullPath);
     } catch (error) {
-      throw new Error(`找不到文件: ${scriptPath}. 请检查路径是否正确。原始路径: ${server_command}`);
+      throw new Error(`找不到文件: ${scriptPath}\n请检查路径是否正确。\n原始输入: ${server_command}\n解析结果: 可执行文件=${executable}, 脚本路径=${scriptPath}`);
     }
 
     const client = new MCPClient();
@@ -418,7 +536,7 @@ class MCPTester {
 
     try {
       // 连接到MCP服务器
-      await client.connect(executable, [scriptPath, ...server_args]);
+      await client.connect(executable, allArgs);
       testResults.serverStartup = true;
       testResults.timings.startup = Date.now() - startTime;
 
@@ -555,11 +673,10 @@ ${testResults.errors.map(e => `- ${e}`).join('\n')}` : ''}`;
       throw new Error("请指定server_command参数");
     }
 
-    // 处理命令
-    const normalizedCommand = server_command.replace(/\\/g, '/');
-    const commandParts = normalizedCommand.split(' ');
-    const executable = commandParts[0];
-    const scriptPath = commandParts.slice(1).join(' ');
+    // 使用统一的路径解析函数处理各种路径格式
+    const parsedCommand = parseServerCommand(server_command);
+    const { executable, scriptPath, args: parsedArgs } = parsedCommand;
+    const allArgs = [scriptPath, ...parsedArgs];
 
     const client = new MCPClient();
     const validationResults = {
@@ -572,7 +689,7 @@ ${testResults.errors.map(e => `- ${e}`).join('\n')}` : ''}`;
 
     try {
       // 连接并初始化
-      await client.connect(executable, [scriptPath]);
+      await client.connect(executable, allArgs);
       await client.initialize();
       
       // 获取工具列表
