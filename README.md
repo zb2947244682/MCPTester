@@ -36,19 +36,3 @@
   }
 }
 ```
-
-**注意**: 将 `@yourusername/mcp-tester` 替换为您实际发布到 npm 的包名。
-
-## 如何运行
-
-在项目根目录下运行：
-
-```bash
-node index.js
-```
-
-或者，如果通过 npm 发布后：
-
-```bash
-npx @zb2947244682/mcp-tester
-```
