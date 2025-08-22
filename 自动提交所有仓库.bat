@@ -22,9 +22,9 @@ cd ..
 
 echo.
 echo ========================================
-echo 处理 mcp-context 仓库
+echo 处理 mcp-context-memory 仓库
 echo ========================================
-cd mcp-context
+cd mcp-context-memory
 if exist .git (
     echo 执行 git add .
     git add .
@@ -32,9 +32,9 @@ if exist .git (
     git commit -m "暂无"
     echo 执行 git push
     git push
-    echo mcp-context 完成
+    echo mcp-context-memory 完成
 ) else (
-    echo mcp-context 不是git仓库，跳过
+    echo mcp-context-memory 不是git仓库，跳过
 )
 cd ..
 
