@@ -572,6 +572,429 @@ server.registerTool("call_mcp_tool", {
   }
 });
 
+// 注册 batch_test_tools 工具
+server.registerTool("batch_test_tools", {
+  title: "Batch Test Tools",
+  description: "批量测试多个MCP工具，支持为每个工具指定不同的测试参数",
+  inputSchema: {
+    server_command: z.string().describe("MCP服务器启动命令。支持多种格式：\n- Windows路径（反斜杠）：D:\\Path\\To\\script.js\n- Unix路径（正斜杠）：D:/Path/To/script.js 或 /path/to/script.js\n- 带引号路径（处理空格）：\"D:\\My Path\\script.js\"\n- 带执行器：node D:\\Path\\script.js 或 python script.py\n- 相对路径：./script.js 或 ../folder/script.js"),
+    test_cases: z.array(z.object({
+      tool_name: z.string().describe("工具名称"),
+      arguments: z.record(z.any()).describe("传递给工具的参数"),
+      description: z.string().optional().describe("测试用例描述（可选）")
+    })).describe("测试用例列表，每个用例包含工具名和参数"),
+    parallel: z.boolean().default(false).describe("是否并行执行测试（false为串行）"),
+    stop_on_error: z.boolean().default(false).describe("遇到错误时是否停止后续测试")
+  }
+}, async ({ server_command, test_cases, parallel = false, stop_on_error = false }) => {
+  if (!test_cases || test_cases.length === 0) {
+    throw new Error("请提供至少一个测试用例");
+  }
+
+  // 使用统一的路径解析函数
+  const parsedCommand = parseServerCommand(server_command);
+  const { executable, scriptPath, args: parsedArgs } = parsedCommand;
+  const allArgs = [scriptPath, ...parsedArgs];
+
+  const client = new MCPClient();
+  const testResults = {
+    total_cases: test_cases.length,
+    successful: 0,
+    failed: 0,
+    execution_time: 0,
+    results: []
+  };
+
+  const startTime = Date.now();
+
+  try {
+    // 连接并初始化
+    await client.connect(executable, allArgs);
+    await client.initialize();
+    
+    // 获取可用工具列表
+    const availableTools = await client.listTools();
+    const toolNames = availableTools.map(t => t.name);
+
+    if (parallel) {
+      // 并行执行测试
+      const promises = test_cases.map(async (testCase) => {
+        const { tool_name, arguments: toolArgs, description } = testCase;
+        
+        if (!toolNames.includes(tool_name)) {
+          return {
+            tool_name,
+            description,
+            success: false,
+            error: `工具 ${tool_name} 不存在`,
+            arguments: toolArgs
+          };
+        }
+
+        try {
+          const toolStart = Date.now();
+          const response = await client.callTool(tool_name, toolArgs);
+          return {
+            tool_name,
+            description,
+            success: true,
+            response,
+            arguments: toolArgs,
+            execution_time: Date.now() - toolStart
+          };
+        } catch (error) {
+          return {
+            tool_name,
+            description,
+            success: false,
+            error: error.message,
+            arguments: toolArgs
+          };
+        }
+      });
+
+      testResults.results = await Promise.all(promises);
+    } else {
+      // 串行执行测试
+      for (const testCase of test_cases) {
+        const { tool_name, arguments: toolArgs, description } = testCase;
+        
+        if (!toolNames.includes(tool_name)) {
+          const result = {
+            tool_name,
+            description,
+            success: false,
+            error: `工具 ${tool_name} 不存在`,
+            arguments: toolArgs
+          };
+          testResults.results.push(result);
+          
+          if (stop_on_error) {
+            break;
+          }
+          continue;
+        }
+
+        try {
+          const toolStart = Date.now();
+          const response = await client.callTool(tool_name, toolArgs);
+          testResults.results.push({
+            tool_name,
+            description,
+            success: true,
+            response,
+            arguments: toolArgs,
+            execution_time: Date.now() - toolStart
+          });
+        } catch (error) {
+          testResults.results.push({
+            tool_name,
+            description,
+            success: false,
+            error: error.message,
+            arguments: toolArgs
+          });
+          
+          if (stop_on_error) {
+            break;
+          }
+        }
+      }
+    }
+
+    // 统计结果
+    testResults.successful = testResults.results.filter(r => r.success).length;
+    testResults.failed = testResults.results.filter(r => !r.success).length;
+    testResults.execution_time = Date.now() - startTime;
+
+  } catch (error) {
+    throw new Error(`批量测试失败: ${error.message}`);
+  } finally {
+    client.disconnect();
+  }
+
+  // 生成报告
+  const report = `# 批量测试报告
+
+## 📊 测试概览
+- **测试用例总数**: ${testResults.total_cases}
+- **成功**: ${testResults.successful} (${Math.round(testResults.successful / testResults.total_cases * 100)}%)
+- **失败**: ${testResults.failed} (${Math.round(testResults.failed / testResults.total_cases * 100)}%)
+- **总执行时间**: ${testResults.execution_time}ms
+- **执行模式**: ${parallel ? '并行' : '串行'}
+
+## 📝 详细结果
+
+${testResults.results.map((result, index) => {
+  const icon = result.success ? '✅' : '❌';
+  let details = `### ${index + 1}. ${icon} ${result.tool_name}`;
+  
+  if (result.description) {
+    details += `\n**描述**: ${result.description}`;
+  }
+  
+  details += `\n**状态**: ${result.success ? '成功' : '失败'}`;
+  
+  if (result.execution_time) {
+    details += `\n**执行时间**: ${result.execution_time}ms`;
+  }
+  
+  details += `\n\n**请求参数**:\n\`\`\`json\n${JSON.stringify(result.arguments, null, 2)}\n\`\`\``;
+  
+  if (result.success && result.response) {
+    // 提取文本响应
+    const textContent = result.response.content
+      ?.filter(item => item.type === 'text')
+      ?.map(item => item.text)
+      ?.join('\n');
+    
+    if (textContent) {
+      details += `\n\n**响应结果**:\n${textContent}`;
+    } else {
+      details += `\n\n**响应结果**:\n\`\`\`json\n${JSON.stringify(result.response, null, 2)}\n\`\`\``;
+    }
+  } else if (!result.success) {
+    details += `\n\n**错误信息**:\n${result.error}`;
+  }
+  
+  return details;
+}).join('\n\n---\n\n')}
+
+## 📈 性能统计
+- **平均执行时间**: ${Math.round(
+  testResults.results
+    .filter(r => r.execution_time)
+    .reduce((sum, r) => sum + r.execution_time, 0) / 
+  testResults.results.filter(r => r.execution_time).length || 0
+)}ms`;
+
+  return {
+    content: [
+      {
+        type: "text",
+        text: report,
+      },
+    ],
+  };
+});
+
+// 注册 validate_mcp_tools 工具
+server.registerTool("validate_mcp_tools", {
+  title: "Validate MCP Tools",
+  description: "验证MCP工具的schema和功能完整性",
+  inputSchema: {
+    server_command: z.string().describe("MCP服务器启动命令"),
+    tool_name: z.string().optional().describe("要测试的特定工具名称（可选）"),
+    test_params: z.record(z.any()).default({}).describe("测试工具时使用的参数。如果指定了tool_name，直接传递该工具的参数；否则传递一个对象，键为工具名，值为对应参数。示例：测试单个工具时 {\"a\": 10, \"b\": 20}，测试多个工具时 {\"add\": {\"a\": 10, \"b\": 20}, \"multiply\": {\"x\": 3, \"y\": 4}}")
+  }
+}, async ({ server_command, tool_name, test_params = {} }) => {
+  if (!server_command) {
+    throw new Error("请指定server_command参数");
+  }
+
+  // 使用统一的路径解析函数处理各种路径格式
+  const parsedCommand = parseServerCommand(server_command);
+  const { executable, scriptPath, args: parsedArgs } = parsedCommand;
+  const allArgs = [scriptPath, ...parsedArgs];
+
+  const client = new MCPClient();
+  const validationResults = {
+    totalTools: 0,
+    validatedTools: [],
+    schemaValidation: [],
+    errors: [],
+    warnings: []
+  };
+
+  try {
+    // 连接并初始化
+    await client.connect(executable, allArgs);
+    await client.initialize();
+    
+    // 获取工具列表
+    const tools = await client.listTools();
+    validationResults.totalTools = tools.length;
+
+    // 过滤要测试的工具
+    const toolsToTest = tool_name 
+      ? tools.filter(t => t.name === tool_name)
+      : tools;
+
+    if (tool_name && toolsToTest.length === 0) {
+      throw new Error(`未找到工具: ${tool_name}`);
+    }
+
+    // 验证每个工具
+    for (const tool of toolsToTest) {
+      const toolValidation = {
+        name: tool.name,
+        description: tool.description,
+        schemaValid: true,
+        testResult: null,
+        issues: []
+      };
+
+      // 验证schema
+      if (!tool.inputSchema) {
+        toolValidation.issues.push('缺少inputSchema');
+        toolValidation.schemaValid = false;
+      } else {
+        // 检查schema结构
+        if (!tool.inputSchema.type) {
+          toolValidation.issues.push('inputSchema缺少type字段');
+          toolValidation.schemaValid = false;
+        }
+        if (tool.inputSchema.type === 'object' && !tool.inputSchema.properties) {
+          toolValidation.issues.push('object类型的schema缺少properties');
+          toolValidation.schemaValid = false;
+        }
+      }
+
+      // 尝试调用工具进行测试
+      if (toolValidation.schemaValid) {
+        try {
+          // 智能处理test_params：
+          // 1. 如果指定了tool_name且test_params不为空，直接使用test_params作为参数
+          // 2. 否则，从test_params[tool.name]获取参数
+          // 3. 如果都没有，生成示例参数
+          let testArgs;
+          if (tool_name && Object.keys(test_params).length > 0 && !test_params[tool.name]) {
+            // 测试单个工具时，直接使用test_params
+            testArgs = test_params;
+          } else if (test_params[tool.name]) {
+            // 从test_params对象中获取对应工具的参数
+            testArgs = test_params[tool.name];
+          } else {
+            // 生成示例参数
+            testArgs = generateExampleCall(tool);
+          }
+          
+          const startTime = Date.now();
+          const result = await client.callTool(tool.name, testArgs);
+          const executionTime = Date.now() - startTime;
+
+          toolValidation.testResult = {
+            success: true,
+            executionTime,
+            responseValid: validateToolResponse(result),
+            testArgs,
+            actualResponse: result  // 保存实际响应
+          };
+
+          if (!toolValidation.testResult.responseValid) {
+            toolValidation.issues.push('响应格式不符合MCP规范');
+          }
+        } catch (error) {
+          // 同样的逻辑处理失败时的testArgs
+          let testArgs;
+          if (tool_name && Object.keys(test_params).length > 0 && !test_params[tool.name]) {
+            testArgs = test_params;
+          } else if (test_params[tool.name]) {
+            testArgs = test_params[tool.name];
+          } else {
+            testArgs = generateExampleCall(tool);
+          }
+          
+          toolValidation.testResult = {
+            success: false,
+            error: error.message,
+            testArgs  // 即使失败也记录请求参数
+          };
+          
+          // 分析错误类型
+          if (error.message.includes('required')) {
+            toolValidation.issues.push('必需参数验证失败');
+          } else if (error.message.includes('type')) {
+            toolValidation.issues.push('参数类型验证失败');
+          }
+        }
+      }
+
+      validationResults.validatedTools.push(toolValidation);
+      validationResults.schemaValidation.push({
+        tool: tool.name,
+        valid: toolValidation.schemaValid,
+        issues: toolValidation.issues
+      });
+    }
+
+  } catch (error) {
+    validationResults.errors.push(error.message);
+  } finally {
+    client.disconnect();
+  }
+
+  // 生成验证报告
+  const report = `# MCP工具验证报告
+
+## 📊 验证概览
+- **测试范围**: ${tool_name || '所有工具'}
+- **工具总数**: ${validationResults.totalTools}
+- **验证工具数**: ${validationResults.validatedTools.length}
+- **验证时间**: ${new Date().toISOString()}
+
+## 🔍 详细验证结果
+
+${validationResults.validatedTools.map(tool => {
+  const statusIcon = tool.schemaValid && tool.testResult?.success ? '✅' : 
+                     tool.schemaValid ? '⚠️' : '❌';
+  
+  return `### ${statusIcon} ${tool.name}
+
+**描述**: ${tool.description || '无描述'}
+
+**Schema验证**: ${tool.schemaValid ? '✅ 通过' : '❌ 失败'}
+
+${tool.testResult ? `**功能测试**: ${tool.testResult.success ? '✅ 成功' : '❌ 失败'}
+${tool.testResult.executionTime ? `- 执行时间: ${tool.testResult.executionTime}ms` : ''}
+${tool.testResult.error ? `- 错误: ${tool.testResult.error}` : ''}
+${tool.testResult.responseValid !== undefined ? `- 响应格式: ${tool.testResult.responseValid ? '✅ 有效' : '❌ 无效'}` : ''}
+
+#### 📤 请求参数:
+\`\`\`json
+${JSON.stringify(tool.testResult.testArgs, null, 2)}
+\`\`\`
+
+${tool.testResult.actualResponse ? `#### 📥 实际响应:
+\`\`\`json
+${JSON.stringify(tool.testResult.actualResponse, null, 2)}
+\`\`\`` : ''}` : '**功能测试**: 未执行'}
+
+${tool.issues.length > 0 ? `**发现的问题**:\n${tool.issues.map(i => `- ${i}`).join('\n')}` : '**问题**: 无'}
+`;
+}).join('\n---\n\n')}
+
+## 📈 统计摘要
+
+- **Schema验证通过率**: ${Math.round((validationResults.schemaValidation.filter(v => v.valid).length / validationResults.schemaValidation.length) * 100)}%
+- **功能测试通过率**: ${Math.round((validationResults.validatedTools.filter(t => t.testResult?.success).length / validationResults.validatedTools.length) * 100)}%
+
+${validationResults.errors.length > 0 ? `## ⚠️ 错误\n${validationResults.errors.map(e => `- ${e}`).join('\n')}` : ''}`;
+
+  return {
+    content: [
+      {
+        type: "text",
+        text: report,
+      },
+    ],
+  };
+});
+
+// 验证工具响应格式
+function validateToolResponse(response) {
+  if (!response) return false;
+  if (!response.content) return false;
+  if (!Array.isArray(response.content)) return false;
+  
+  for (const item of response.content) {
+    if (!item.type) return false;
+    if (item.type === 'text' && typeof item.text !== 'string') return false;
+  }
+  
+  return true;
+}
+
 // 工具参数生成函数
 function generateExampleCall(tool) {
   const properties = tool.inputSchema?.properties || {};
