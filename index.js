@@ -1,4 +1,35 @@
 #!/usr/bin/env node
+/**
+ * MCP-Tester 测试工具服务器
+ * 
+ * 这是一个专业的MCP工具测试和调试平台，提供完整的测试功能：
+ * 1. test_mcp_server - MCP服务器测试（启动、监控、调试）
+ * 2. test_tool_functionality - 工具功能测试（参数验证、错误处理）
+ * 3. test_performance - 性能测试（响应时间、吞吐量、压力测试）
+ * 4. test_integration - 集成测试（多工具协作、端到端测试）
+ * 5. test_debug - 调试工具（日志分析、错误诊断、状态监控）
+ * 
+ * 核心功能：
+ * - 服务器管理：启动、停止、重启MCP服务器
+ * - 工具测试：验证工具参数、测试边界条件
+ * - 性能监控：实时性能指标、响应时间分析
+ * - 错误诊断：详细的错误日志、堆栈跟踪
+ * - 自动化测试：支持测试脚本和批量测试
+ * 
+ * 高级特性：
+ * - 智能路径解析：支持Windows和Unix路径格式
+ * - 进程管理：完整的子进程生命周期管理
+ * - 实时监控：实时输出和状态更新
+ * - 测试报告：详细的测试结果和性能分析
+ * - 调试支持：断点、日志、状态检查
+ * 
+ * 使用场景：
+ * - 开发调试：MCP工具开发和调试
+ * - 质量保证：工具功能验证和测试
+ * - 性能优化：性能瓶颈识别和优化
+ * - 问题诊断：生产环境问题排查
+ * - 自动化测试：持续集成和部署测试
+ */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
