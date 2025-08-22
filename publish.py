@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-智能发版工具
+智能发版工具 (基于 npm version)
 支持三种发布类型：BUG修复、小功能更新、大版本更新
+利用 npm 原生的版本管理功能
 """
 
 import json
-import os
 import subprocess
 import sys
-from pathlib import Path
 
 
 def load_package_json():
@@ -25,60 +24,97 @@ def load_package_json():
         sys.exit(1)
 
 
-def save_package_json(package_data):
-    """保存 package.json 文件"""
+def run_npm_command(command, description):
+    """执行 npm 命令"""
     try:
-        with open('package.json', 'w', encoding='utf-8') as f:
-            json.dump(package_data, f, indent=2, ensure_ascii=False)
-            f.write('\n')
-        return True
+        print(f"🔄 {description}...")
+        
+        # 尝试不同的 npm 命令路径
+        npm_commands = ['npm', 'npm.cmd', 'npm.exe']
+        
+        for npm_cmd in npm_commands:
+            try:
+                # 构建完整命令
+                full_command = [npm_cmd] + command
+                
+                result = subprocess.run(
+                    full_command,
+                    capture_output=True, 
+                    text=True, 
+                    encoding='utf-8'
+                )
+                
+                if result.returncode == 0:
+                    print(f"✅ {description}成功！")
+                    if result.stdout.strip():
+                        print(f"输出：{result.stdout.strip()}")
+                    return True, result.stdout
+                else:
+                    print(f"❌ {description}失败！")
+                    if result.stderr:
+                        print(f"错误信息：{result.stderr}")
+                    if result.stdout:
+                        print(f"输出信息：{result.stdout}")
+                    return False, result.stderr
+                    
+            except FileNotFoundError:
+                continue  # 尝试下一个命令
+                
+        # 如果所有命令都失败了
+        print("❌ 找不到 npm 命令！请确保 Node.js 和 npm 已正确安装并在 PATH 中。")
+        return False, "npm command not found"
+        
     except Exception as e:
-        print(f"❌ 错误：无法保存 package.json 文件 - {e}")
+        print(f"❌ 执行命令过程中出现错误：{e}")
+        return False, str(e)
+
+
+def check_git_status():
+    """检查 Git 工作目录状态"""
+    try:
+        print("🔍 检查 Git 工作目录状态...")
+        
+        # 检查是否有未提交的更改
+        result = subprocess.run([
+            'git', 'status', '--porcelain'
+        ], capture_output=True, text=True, encoding='utf-8')
+        
+        if result.returncode == 0 and result.stdout.strip():
+            print("⚠️  发现未提交的更改：")
+            print(result.stdout.strip())
+            print()
+            
+            # 询问用户是否要提交
+            while True:
+                try:
+                    choice = input("是否要提交这些更改？(y/n): ").strip().lower()
+                    if choice in ['y', 'yes', '是']:
+                        return commit_changes()
+                    elif choice in ['n', 'no', '否']:
+                        print("❌ 发布终止：Git 工作目录不干净")
+                        return False
+                    else:
+                        print("⚠️  请输入 y 或 n")
+                except KeyboardInterrupt:
+                    print("\n\n👋 操作已取消")
+                    sys.exit(0)
+        else:
+            print("✅ Git 工作目录干净")
+            return True
+            
+    except Exception as e:
+        print(f"❌ 检查 Git 状态时出现错误：{e}")
         return False
 
 
-def parse_version(version_str):
-    """解析版本号字符串为数组"""
+def commit_changes():
+    """提交所有更改"""
     try:
-        parts = version_str.split('.')
-        return [int(part) for part in parts]
-    except ValueError:
-        print(f"❌ 错误：无效的版本号格式 - {version_str}")
-        sys.exit(1)
-
-
-def update_version(current_version, release_type):
-    """根据发布类型更新版本号"""
-    version_parts = parse_version(current_version)
-    
-    # 确保版本号至少有3位
-    while len(version_parts) < 3:
-        version_parts.append(0)
-    
-    if release_type == 'patch':
-        # BUG修复：增加 patch 版本号
-        version_parts[2] += 1
-    elif release_type == 'minor':
-        # 小功能更新：增加 minor 版本号，重置 patch 为0
-        version_parts[1] += 1
-        version_parts[2] = 0
-    elif release_type == 'major':
-        # 大版本更新：增加 major 版本号，重置 minor 和 patch 为0
-        version_parts[0] += 1
-        version_parts[1] = 0
-        version_parts[2] = 0
-    
-    return '.'.join(map(str, version_parts))
-
-
-def run_git_commit(version, release_name):
-    """执行 Git 提交操作"""
-    try:
-        print("📝 正在提交到 Git 仓库...")
+        print("📝 正在提交更改...")
         
-        # Git 添加 package.json
+        # 添加所有文件
         result_add = subprocess.run([
-            'git', 'add', 'package.json'
+            'git', 'add', '.'
         ], capture_output=True, text=True, encoding='utf-8')
         
         if result_add.returncode != 0:
@@ -87,8 +123,8 @@ def run_git_commit(version, release_name):
                 print(f"错误信息：{result_add.stderr}")
             return False
         
-        # Git 提交
-        commit_message = f"🚀 发布版本 v{version} ({release_name})"
+        # 提交
+        commit_message = f"🔧 发布前准备：{input('请输入提交信息（回车使用默认信息）: ').strip() or '自动提交更改'}"
         result_commit = subprocess.run([
             'git', 'commit', '-m', commit_message
         ], capture_output=True, text=True, encoding='utf-8')
@@ -99,70 +135,42 @@ def run_git_commit(version, release_name):
                 print(f"错误信息：{result_commit.stderr}")
             return False
         
-        # Git 推送到远程仓库
-        result_push = subprocess.run([
-            'git', 'push'
-        ], capture_output=True, text=True, encoding='utf-8')
-        
-        if result_push.returncode != 0:
-            print("❌ Git push 失败！")
-            if result_push.stderr:
-                print(f"错误信息：{result_push.stderr}")
-            return False
-        
-        print("✅ 已成功提交并推送到远程仓库！")
-        print(f"📝 提交信息：{commit_message}")
+        print("✅ 更改已提交")
         return True
         
     except Exception as e:
-        print(f"❌ Git 操作过程中出现错误：{e}")
+        print(f"❌ 提交更改时出现错误：{e}")
         return False
 
 
-def run_npm_publish():
-    """执行 npm publish 命令"""
+def run_git_push():
+    """推送 Git 标签到远程仓库"""
     try:
-        print("🚀 正在发布到 npm...")
+        print("📤 正在推送标签到远程仓库...")
         
-        # 尝试不同的 npm 命令路径
-        npm_commands = ['npm', 'npm.cmd', 'npm.exe']
+        # 推送所有标签
+        result = subprocess.run([
+            'git', 'push', '--follow-tags'
+        ], capture_output=True, text=True, encoding='utf-8')
         
-        for npm_cmd in npm_commands:
-            try:
-                result = subprocess.run([
-                    npm_cmd, 'publish', 
-                    '--access', 'public', 
-                    '--registry=https://registry.npmjs.org/'
-                ], capture_output=True, text=True, encoding='utf-8')
-                
-                if result.returncode == 0:
-                    print("✅ 发布成功！")
-                    return True
-                else:
-                    print("❌ 发布失败！")
-                    if result.stderr:
-                        print(f"错误信息：{result.stderr}")
-                    if result.stdout:
-                        print(f"输出信息：{result.stdout}")
-                    return False
-                    
-            except FileNotFoundError:
-                continue  # 尝试下一个命令
-                
-        # 如果所有命令都失败了
-        print("❌ 找不到 npm 命令！请确保 Node.js 和 npm 已正确安装并在 PATH 中。")
-        print("💡 你也可以手动运行：npm publish --access public --registry=https://registry.npmjs.org/")
-        return False
-        
+        if result.returncode == 0:
+            print("✅ 标签推送成功！")
+            return True
+        else:
+            print("❌ 标签推送失败！")
+            if result.stderr:
+                print(f"错误信息：{result.stderr}")
+            return False
+            
     except Exception as e:
-        print(f"❌ 发布过程中出现错误：{e}")
+        print(f"❌ Git 推送过程中出现错误：{e}")
         return False
 
 
 def main():
     """主函数"""
     print("=" * 50)
-    print("           🚀 智能发版工具")
+    print("        🚀 智能发版工具 (基于 npm version)")
     print("=" * 50)
     print()
     
@@ -173,9 +181,9 @@ def main():
     print(f"📦 当前版本：{current_version}")
     print()
     print("请选择发布类型：")
-    print("1. 🐛 BUG修复 (增加 0.0.1)")
-    print("2. ✨ 小功能更新 (增加 0.1.0，重置patch为0)")
-    print("3. 🎉 大版本更新 (增加 1.0.0，重置minor和patch为0)")
+    print("1. 🐛 BUG修复 (patch: x.y.z -> x.y.z+1)")
+    print("2. ✨ 小功能更新 (minor: x.y.z -> x.y+1.0)")
+    print("3. 🎉 大版本更新 (major: x.y.z -> x+1.0.0)")
     print()
     
     # 获取用户选择
@@ -200,39 +208,59 @@ def main():
     release_type, release_name = release_types[choice]
     
     print(f"\n📋 选择的发布类型：{release_name}")
-    print("🔄 正在更新版本号...")
     
-    # 更新版本号
-    new_version = update_version(current_version, release_type)
-    package_data['version'] = new_version
-    
-    # 保存更新后的 package.json
-    if not save_package_json(package_data):
+    # 第一步：检查 Git 工作目录状态
+    if not check_git_status():
         sys.exit(1)
     
-    print(f"✅ 版本号已从 {current_version} 更新为 {new_version} ({release_name})")
+    # 第二步：使用 npm version 更新版本号和创建 Git 标签
+    version_success, version_output = run_npm_command(
+        ['version', release_type, '--git-tag-version=true'],
+        f"更新版本号 ({release_type})"
+    )
     
-    # 直接发布到 npm
-    npm_success = run_npm_publish()
+    if not version_success:
+        print("❌ 版本更新失败，发布终止")
+        sys.exit(1)
     
-    # 如果 npm 发布成功，则提交到 Git
+    # 从输出中提取新版本号
+    new_version = version_output.strip() if version_output else "未知"
+    if new_version.startswith('v'):
+        new_version = new_version[1:]  # 移除 'v' 前缀
+    
+    print(f"✅ 版本号已从 {current_version} 更新为 {new_version}")
+    
+    # 第三步：发布到 npm
+    publish_success, _ = run_npm_command(
+        ['publish', '--access', 'public', '--registry=https://registry.npmjs.org/'],
+        "发布到 npm"
+    )
+    
+    # 第四步：推送标签到远程仓库
     git_success = False
-    if npm_success:
-        git_success = run_git_commit(new_version, release_name)
+    if publish_success:
+        git_success = run_git_push()
     
+    # 显示结果
     print()
     print("=" * 50)
-    if npm_success:
-        print("          ✅ npm 发布成功！")
-        print(f"发布类型：{release_name}")
-        print(f"新版本：{new_version}")
-        
+    print("               📊 发布结果")
+    print("=" * 50)
+    print(f"发布类型：{release_name}")
+    print(f"新版本：{new_version}")
+    print()
+    
+    if publish_success:
+        print("✅ npm 发布成功！")
         if git_success:
-            print("          ✅ Git 提交成功！")
+            print("✅ Git 标签推送成功！")
         else:
-            print("          ⚠️  Git 提交失败（但 npm 发布已完成）")
+            print("⚠️  Git 标签推送失败（但 npm 发布已完成）")
+            print("💡 你可以手动运行：git push --follow-tags")
     else:
-        print("          ❌ npm 发布失败！")
+        print("❌ npm 发布失败！")
+        print("💡 版本号已更新，你可以手动运行：npm publish --access public")
+    
     print("=" * 50)
 
 
