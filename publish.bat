@@ -1,1 +1,4 @@
-npm publish --access public --registry=https://registry.npmjs.org/
+@echo off
+chcp 65001 >nul
+python publish.py
+pause
