@@ -28,11 +28,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/zb2947244682/MCPTester.git"
+    "url": "https://github.com/zb2947244682/mcp-tester"
   },
-  "homepage": "https://github.com/zb2947244682/MCPTester#readme",
+  "homepage": "https://github.com/zb2947244682",
   "bugs": {
-    "url": "https://github.com/zb2947244682/MCPTester/issues"
+    "url": "https://github.com/zb2947244682/mcp-tester/issues"
   },
   "engines": {
     "node": ">=18.0.0"
