@@ -869,7 +869,7 @@ async function importData(data) {
     "command": "npx",
     "args": [
       "-y",
-      "@zb2947244682/mcp-tester"
+      "@zb2947244682/mcp-tester@latest"
     ]
   }
 }
