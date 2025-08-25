@@ -157,7 +157,7 @@ class MCPClient extends EventEmitter {
 
         // 处理stderr（调试信息）
         this.process.stderr.on('data', (data) => {
-          console.log('[MCP Server Debug]:', data.toString());
+          //console.log('[MCP Server Debug]:', data.toString());
         });
 
         // 处理进程错误
@@ -168,7 +168,7 @@ class MCPClient extends EventEmitter {
         // 进程退出处理
         this.process.on('exit', (code, signal) => {
           if (code !== 0 && code !== null && signal !== 'SIGTERM') {
-            console.log(`MCP服务器异常退出，退出码: ${code}, 信号: ${signal}`);
+            //console.log(`MCP服务器异常退出，退出码: ${code}, 信号: ${signal}`);
           }
         });
 
@@ -1094,4 +1094,4 @@ function generateExampleCall(tool) {
 // 创建传输层并连接服务器
 const transport = new StdioServerTransport();
 await server.connect(transport);
-console.log("MCP Tester 已启动");
+//console.log("MCP Tester 已启动");
